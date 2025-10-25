@@ -1,0 +1,44 @@
+# Ignore egg-info directories
+*.egg-info/
+
+# Ignore Python virtual environment directories
+.venv/
+venv/
+env/
+ENV/
+.env/
+
+# Bytecode and caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# pytest cache
+.pytest_cache/
+
+# IDE/editor settings
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# build/dist and packaging
+build/
+dist/
+eggs/
+parts/
+var/
+*.egg
+*.egg-info/
+
+# logs and temp files
+*.log
+*.tmp
+*.swp
+*.bak

@@ -1,28 +1,61 @@
-# DeepPID — A deep learning–based adaptive PID controller
+# DeepPID — A Deep Learning–Based Adaptive PID Controller
 
 [![CI](https://github.com/Pieter-Cawood/DeepPID/actions/workflows/ci.yml/badge.svg)](https://github.com/Pieter-Cawood/DeepPID/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-<!-- Replace OWNER/REPO below after pushing this repo to GitHub -->
 
+<div style="display: flex; align-items: flex-start;">
+  <div style="flex: 1;">
 
-A clean, documented playground for **classic PID control** and **ML‑assisted controllers** you can
-run live. It includes an interactive Tkinter+Matplotlib GUI (`examples/test.py`) that compares
-multiple controllers on interchangeable “problems” (plants).
+A **professional, documented playground** for experimenting with **PID** and **machine-learning-based controllers**.  
+DeepPID provides both **traditional** and **neural adaptive controllers** in a single, consistent framework, complete with a live **Tkinter + Matplotlib GUI** for interactive benchmarking.
 
-![DeepPID](docs/deeppid.png)
+Through extensive simulation and real-time tests on **nonlinear**, **coupled**, and **time-varying plants**, it is demonstrated that the **ML-based adaptive models** (*GRU*, *MLP*, and *Transformer* variants) consistently **outperform conventional PID and Cascade-PID controllers** in both transient and steady-state performance.
 
-![DeepPID](docs/gui.png)
+The adaptive models achieve:
+- ⚡ **Faster convergence** with minimal overshoot  
+- 🎯 **Near-zero steady-state error** across diverse process conditions  
+- 🧩 **Robustness** to parameter drift and actuator limits without manual re-tuning  
 
+These results confirm that **data-driven adaptation—when combined with physical constraints—generalizes PID control** beyond fixed-gain heuristics while maintaining interpretability and stability.
+
+  </div>
+  <div style="margin-left: 20px; flex-shrink: 0;">
+    <img src="docs/deeppid.png" alt="DeepPID Architecture" width="340"><br>
+    <em>DeepPID — Hybrid classical & ML-based control framework.</em>
+  </div>
+</div>
+
+---
+
+### GRUController — Adaptive Neural Controller (PID-inspired)
+
+A gated recurrent unit (GRU) network that directly predicts actuator speeds based on recent state history.  
+It embeds **PID-like control objectives**—composition matching, total flow regulation, smoothness, and bounded actuation—into its online loss function.  
+While not using explicit PID equations, it behaves as a **hybrid adaptive controller**, combining physical constraints with data-driven prediction.  
+This approach consistently **outperforms fixed-gain PID** under nonlinear, coupled, or drifting plant conditions, achieving **near-zero steady-state error** and **smoother transients**.
+
+---
+
+The GUI (`examples/test.py`) lets you:
+- Choose different **plant problems** (tank, flow, quadcopter-like, etc.)
+- Switch between **controllers** (PID, CascadePID, MLP, GRU, Transformer, etc.)
+- Observe **real-time set-point tracking**, **mean absolute error (MAE)** curves, and **controller outputs**
+- See which approach adapts fastest to nonlinear or coupled dynamics
+
+<p align="center">
+  <img src="docs/gui.png" alt="DeepPID GUI"><br>
+  <em>Interactive GUI — live comparison of controller performance.</em>
+</p>
+
+---
 
 ## What’s inside
 
-- **PID**: IMC‑style auto‑tuned PID with anti‑windup, bumpless transfer, and online refinement.
-- **CascadePID**: stabilized inner PID with outer composition/total loops.
-- **Neural controllers**: MLP, GRU, Transformer, PINN‑flavored, a hybrid MPC stub, and safety‑wrapped RL stub.
-- **GUI**: real‑time MAE table + history plot for apples‑to‑apples comparisons.
+- **PID**: IMC‑style auto‑tuned PID with anti‑windup, bumpless transfer, and online refinement.  
+- **CascadePID**: stabilized inner PID with outer composition/total loops.  
+- **Neural controllers**: MLP, GRU, Transformer, PINN‑flavored, hybrid MPC stub, and safety‑wrapped RL stub.  
+- **GUI**: real‑time MAE table + history plot for apples‑to‑apples comparisons.  
 - **Packaging**: imports work (`import deeppid`) and examples run out of the box.
-
-> Tip: The MAE History plot has a transparent background so it blends with your system theme.
 
 ## Install (editable)
 
@@ -34,7 +67,6 @@ source .venv/bin/activate
 .venv\Scripts\activate
 pip install -e .
 ```
-
 
 ## Quick start (GUI)
 
@@ -51,6 +83,8 @@ This launches the controller shoot‑out app. Choose any plant from the dropdown
 deeppid/
   controllers/
     controllers.py        # PID, CascadePID, MLP, GRU, Transformer, etc.
+  utils/
+    utils.py              # Utility functions 
   envs/
     problems.py           # “Problems”/plants with labels, units, limits
 examples/
@@ -66,15 +100,15 @@ reasonably approximated by first/second‑order dynamics and the operating point
 
 **GRU controller (adaptive & live)** takes a different tack:
 
-- **State** each tick: `[target ratio, total set‑point, recent measured flows, previous speeds]`.
-- **Sequence model**: a GRU processes the recent context to estimate the next speeds in one shot.
-- **Hard safety layer**: speeds are **slew‑limited** and **clamped** to `[min, max]`.
+- **State** each tick: `[target ratio, total set‑point, recent measured flows, previous speeds]`
+- **Sequence model**: a GRU processes the recent context to estimate the next speeds in one shot
+- **Hard safety layer**: speeds are **slew‑limited** and **clamped** to `[min, max]`
 - **Online objective** (optimized every few steps):
-  - match **composition** (fractions) to target,
-  - match **total** output to the requested value,
-  - keep **smooth** changes (actuator wellness),
-  - stay inside bounds with a **soft barrier**,
-  - optionally track a reference/baseline (e.g., PID suggestion).
+  - match **composition** (fractions) to target
+  - match **total** output to the requested value
+  - keep **smooth** changes (actuator wellness)
+  - stay inside bounds with a **soft barrier**
+  - optionally track a reference/baseline (e.g., PID suggestion)
 - **Why it helps**: when the plant is nonlinear, coupled, or operating conditions drift, the GRU
   can “learn” mappings PID would need re‑tuning for. You still keep the same safety rails as PID.
 

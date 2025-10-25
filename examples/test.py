@@ -1,10 +1,15 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # File: test.py
 # GUI app (Tkinter + Matplotlib) that compares controllers from
-# deeppid.controllers.controllers against interchangeable "Problem"
-# dynamics from deeppid.envs.problems.
+# deeppid (registry: deeppid.AVAILABLE) against interchangeable "Problem"
+# dynamics from deeppid.envs.problems (registry: AVAILABLE_PROBLEMS).
 #
-# Supports variable N and per-problem units/titles:
+# Relies on your centralized imports in deeppid/__init__.py:
+#   - torch default dtype (float64)
+#   - TkAgg backend + transparent figure defaults
+#   - Controller classes auto-registered in deeppid.AVAILABLE
+#
+# Supports variable N and per-problem metadata:
 #   • problem.labels            -> row labels (e.g., ["Source 1", ...] or ["Rotor 1", ...])
 #   • problem.output_name       -> "Flow" / "Thrust" / etc. (optional, defaults to "Flow")
 #   • problem.output_unit       -> "L/min" / "N" / etc. (optional, defaults to "L/min")
@@ -16,176 +21,31 @@ from tkinter import ttk
 from tkinter import font as tkfont
 import numpy as np
 import torch
-import importlib
 
-# --- Matplotlib for interactive chart ---
-import matplotlib
-matplotlib.use("TkAgg")
-import matplotlib as mpl
+# Matplotlib (backend & rcParams are set in deeppid.__init__, but harmless to import here)
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-# Make transparency the default in case other figures are created later
-mpl.rcParams["figure.facecolor"] = "none"
-mpl.rcParams["axes.facecolor"] = "none"
-
-# Import problems (plants) — keep using your existing problems module
-from deeppid.envs.problems import *
-
-torch.set_default_dtype(torch.float64)
-
-# -------------------------- Import controllers (new path) --------------------------
-AVAILABLE = {}
-
-def _safe_import(class_name, menu_name=None):
-    """
-    Try importing controller classes from the new package path first:
-      deeppid.controllers.controllers
-    Fall back to legacy local imports if present.
-    """
-    # 1) New canonical location
-    try:
-        mod = importlib.import_module("deeppid.controllers.controllers")
-        cls = getattr(mod, class_name)
-        AVAILABLE[menu_name or class_name] = cls
-        return
-    except Exception:
-        pass
-
-    # 2) Legacy flat file `models.py` next to this script (if you still have it)
-    try:
-        mod = importlib.import_module("models")
-        cls = getattr(mod, class_name)
-        AVAILABLE[menu_name or class_name] = cls
-        return
-    except Exception:
-        pass
-
-    # 3) Legacy relative import (if this script is part of a package)
-    try:
-        mod = importlib.import_module(".models", package=__package__)
-        cls = getattr(mod, class_name)
-        AVAILABLE[menu_name or class_name] = cls
-        return
-    except Exception:
-        pass
-
-# Core controllers (names must match your class names in controllers.py)
-_safe_import("PIDController", "PID")
-_safe_import("CascadePIDController", "CascadePID")
-_safe_import("MLPController", "MLP")
-_safe_import("GRUController", "GRU")
-
-# Advanced (map to your class names)
-_safe_import("HybridMPCController", "HybridMPC")
-_safe_import("PIDResidualNN", "PID+Residual")
-_safe_import("TransformerCtrl", "Transformer")
-_safe_import("RLSafetyCtrl", "SafeRL")
-_safe_import("PINNCtrl", "PINN")
-_safe_import("AdaptiveHierCtrl", "AdaptiveHier")
+# Pull the unified registry + utilities directly from your package
+from deeppid import AVAILABLE, CtrlAdapter, TensorUtils
+from deeppid.envs.problems import AVAILABLE_PROBLEMS
 
 # -------------------------- Configuration --------------------------
-CONTROL_PERIOD_MS = 250   # the UI tick; each problem uses Ts passed in here
+CONTROL_PERIOD_MS = 250   # UI/control tick; Ts is passed to each problem
 Ts = CONTROL_PERIOD_MS / 1000.0
 
-# For MLP/GRU defaults (only passed through to their constructors if present)
+# For MLP/GRU defaults (only passed to their constructors if present)
 W_COMP, W_TOTAL, W_SMOOTH, W_BOUND, W_REF, W_MEAS = 3.0, 6.0, 0.10, 0.08, 0.03, 0.25
 SEQ_LEN, GRU_HID, GRU_TRAIN_STEPS, MLP_TRAIN_STEPS = 20, 128, 6, 12
 
 # Chart history cap
 MAX_POINTS = 1200  # ~5 minutes at 250 ms per step
 
-# -------------------------- Utilities --------------------------
-
-def clip(v, lo, hi):
-    return torch.min(torch.max(v, lo), hi)
-
-def slew_limit(prev, desired, max_delta, lo, hi):
-    return clip(prev + torch.clamp(desired - prev, -max_delta, max_delta), lo, hi)
-
-def sanitize(x, fallback):
-    """Replace NaN/Inf in tensor x with values from fallback (same shape)."""
-    bad = ~torch.isfinite(x)
-    if bad.any():
-        x = x.clone()
-        x[bad] = fallback[bad]
-    return x
-
-def ensure_shape(x: torch.Tensor, like: torch.Tensor) -> torch.Tensor:
-    """
-    Ensure x has the same length as 'like'. If longer -> truncate; if shorter -> pad with 'like'.
-    Always returns float64 1-D tensor of len N.
-    """
-    like = like.detach().clone().to(torch.float64).reshape(-1)
-    N = like.numel()
-    if not isinstance(x, torch.Tensor):
-        x = torch.tensor(x, dtype=torch.float64)
-    x = x.detach().clone().to(torch.float64).reshape(-1)
-    if x.numel() == N:
-        return x
-    y = like.clone()
-    m = min(N, x.numel())
-    if m > 0:
-        y[:m] = x[:m]
-    return y
-
-def to_f64_scalar_tensor(x):
-    """Return a float64 0-D tensor from a float or a tensor (no re-wrapping warning)."""
-    if isinstance(x, torch.Tensor):
-        return x.detach().clone().to(torch.float64).reshape(())
-    return torch.tensor(float(x), dtype=torch.float64)
-
-
-# Normalize controller interfaces
-class CtrlAdapter:
-    def __init__(self, name, inst):
-        self.name = name
-        self.inst = inst
-
-    def sync_to(self, speeds_now, flows_now):
-        if hasattr(self.inst, "sync_to"):
-            self.inst.sync_to(speeds_now, flows_now)
-        if hasattr(self.inst, "reset_hidden"):
-            self.inst.reset_hidden()
-
-    def train_once(self, target_ratio, F_total, flows_meas_filt, ref_speeds=None, measured_flows=None):
-        if hasattr(self.inst, "train_step"):
-            try:
-                return self.inst.train_step(target_ratio, F_total, flows_meas_filt,
-                                            ref_speeds=ref_speeds, measured_flows=measured_flows)
-            except TypeError:
-                try:
-                    return self.inst.train_step(target_ratio, F_total, flows_meas_filt)
-                except Exception:
-                    return None
-        return None
-
-    def suggest(self, flows_meas_filt, target_ratio, F_total, speeds_direct):
-        if hasattr(self.inst, "step"):
-            try:
-                out = self.inst.step(flows_meas_filt, target_ratio, F_total, speeds_direct)
-                return out[0] if isinstance(out, (tuple, list)) else out
-            except TypeError:
-                try:
-                    out = self.inst.step(flows_meas_filt, target_ratio, F_total)
-                    return out[0] if isinstance(out, (tuple, list)) else out
-                except Exception:
-                    pass
-        if hasattr(self.inst, "forward"):
-            try:
-                return self.inst.forward(target_ratio, F_total, flows_meas_filt)
-            except Exception:
-                pass
-        if hasattr(self.inst, "prev_speeds"):
-            return self.inst.prev_speeds.clone()
-        return speeds_direct.clone()
-
-
 # -------------------------- App --------------------------
 class App:
     def __init__(self, root):
         self.root = root
-        root.title("Controllers Comparison — Interchangeable Plant Problems")
+        root.title("DeepPID — Controllers vs Interchangeable Plant Problems")
 
         # --- Choose problem ---
         self.problem_names = list(AVAILABLE_PROBLEMS.keys())
@@ -197,11 +57,11 @@ class App:
         # Per-problem metadata (defaults for older problems)
         self.output_name = getattr(self.problem, "output_name", "Flow")         # e.g., "Flow" or "Thrust"
         self.output_unit = getattr(self.problem, "output_unit", "L/min")        # e.g., "L/min" or "N"
-        self.entity_title = getattr(self.problem, "entity_title", "Material")   # e.g., "Material" or "Rotor")
+        self.entity_title = getattr(self.problem, "entity_title", "Material")   # e.g., "Material" or "Rotor"
 
         # --- Global target (shared across problems) ---
         self.target_ratio = self.problem.default_target_ratio.clone()
-        self.F_total_target = to_f64_scalar_tensor(self.problem.default_total_flow)
+        self.F_total_target = TensorUtils.to_f64_scalar_tensor(self.problem.default_total_flow)
 
         # Build controllers for the current problem (important for variable N!)
         self.controllers = {}
@@ -264,9 +124,8 @@ class App:
         main = ttk.Frame(root, padding=(10, 0))
         self.main = main  # keep a handle for width syncing
         main.pack(fill="both", expand=True)
-        # Left column fixed like the MAE summary; right column expands
-        main.grid_columnconfigure(0, weight=0)  # fixed/narrow, minsize will be set to summary width
-        main.grid_columnconfigure(1, weight=1, uniform="cols")
+        main.grid_columnconfigure(0, weight=0)  # fixed (left)
+        main.grid_columnconfigure(1, weight=1, uniform="cols")  # expands (right)
 
         # Left column, Row 0: Target Ratio Editor
         self.ratio_frame = ttk.LabelFrame(main, text="Target Ratio (%) — type/edit; others adjust to keep 100%", padding=10)
@@ -285,14 +144,14 @@ class App:
         self.cmpf = ttk.LabelFrame(main, text="Controllers — Real-time Mix Error (pp)", padding=10)
         self.cmpf.grid(row=1, column=1, sticky="nsew", padx=(6, 0), pady=(0, 8))
 
-        # Row 2 (side by side): MAE summary table and chart
+        # Row 2: MAE summary + chart
         bottom = ttk.Frame(main, padding=(0, 0))
-        self.bottom = bottom  # keep a handle for width syncing
+        self.bottom = bottom
         bottom.grid(row=2, column=0, columnspan=2, sticky="nsew")
         bottom.grid_columnconfigure(0, weight=0)  # summary (fixed)
         bottom.grid_columnconfigure(1, weight=1)  # chart (expands)
 
-        # ── MAE Summary table on the left
+        # ── MAE Summary table (left)
         self.summary_table_frame = ttk.LabelFrame(bottom, text="MAE Summary (pp)", padding=8)
         self.summary_table_frame.grid(row=0, column=0, sticky="nsw", padx=(0, 8), pady=(0, 10))
         self.summary_table_frame.grid_columnconfigure(0, weight=0)
@@ -310,7 +169,7 @@ class App:
             val_lbl.grid(row=i, column=1, sticky="w")
             self.summary_rows[name] = (name_lbl, val_lbl)
 
-        # Right-aligned tail (applied total & step)
+        # Tail line (applied total + step)
         self.summary_tail = ttk.Label(
             self.summary_table_frame,
             text=f"Applied total {self.output_name.lower()} ~ -- {self.output_unit} (target --)   | Step 0",
@@ -322,12 +181,11 @@ class App:
         # Match left column width to MAE summary width
         self._sync_left_column_width_with_summary()
 
-        # ── MAE History chart on the right
+        # ── MAE History chart (right)
         chart_frame = ttk.LabelFrame(bottom, text="MAE History (pp) vs Step", padding=6)
         chart_frame.grid(row=0, column=1, sticky="nsew", padx=(0, 0), pady=(0, 10))
         bottom.grid_rowconfigure(0, weight=1)
 
-        # Create the figure/axes with transparent backgrounds
         self.fig = Figure(figsize=(7.0, 3.6), dpi=100)
         self.fig.patch.set_facecolor("none")
         self.ax = self.fig.add_subplot(111)
@@ -336,7 +194,6 @@ class App:
         self.ax.set_ylabel("MAE (pp)")
         self.ax.grid(True, alpha=0.3)
 
-        # Build lines, then legend (only if we actually have controllers)
         self.lines = {}
         for name in self.controller_names:
             line, = self.ax.plot([], [], label=name)
@@ -344,11 +201,9 @@ class App:
         if self.controller_names:
             self.ax.legend(loc="upper right", framealpha=0.0)
 
-        # Create and style the Tk canvas hosting the figure
         self.canvas = FigureCanvasTkAgg(self.fig, master=chart_frame)
         w = self.canvas.get_tk_widget()
-
-        # Resolve a ttk background color to match the parent frame
+        # Resolve ttk background to match parent
         style = ttk.Style(chart_frame)
         bg = (
             style.lookup("TLabelframe", "background")
@@ -356,9 +211,6 @@ class App:
             or chart_frame.master.cget("bg")
             or "#FFFFFF"
         )
-
-        # Apply to the tk.Canvas that hosts the figure
-        # Use 'bg' (alias of 'background' on Tk) and remove highlight border
         w.configure(bg=bg, highlightthickness=0)
         w.pack(side="top", fill="both", expand=True)
         self.canvas.draw()
@@ -373,12 +225,12 @@ class App:
         btns.pack(side="bottom", fill="x")
         ttk.Button(btns, text="Clear Chart", command=self._clear_chart).pack(side="right", padx=4)
 
-        # Build all dynamic tables/rows once initially
+        # Build dynamic tables/rows
         self._build_applied_table()
         self._build_share_bars()
         self._build_cmp_table()
 
-        # Sync controllers to current plant state
+        # Sync controllers to current state
         for ctrl in self.controllers.values():
             ctrl.sync_to(self.speeds_cmd, self.flows_meas_filt)
 
@@ -414,6 +266,7 @@ class App:
                 try:
                     inst = cls(**dd)  # PID/Cascade keyword signature
                 except TypeError:
+                    # Controllers with custom ctors
                     if name == "MLP":
                         inst = cls(self.problem.N, self.problem.k_coeff, self.problem.speed_min, self.problem.speed_max,
                                    Ts, self.problem.slew_rate,
@@ -427,19 +280,23 @@ class App:
                                    W_COMP=W_COMP, W_TOTAL=W_TOTAL, W_SMOOTH=W_SMOOTH,
                                    W_BOUND=W_BOUND, W_REF=W_REF, W_MEAS=W_MEAS)
                     else:
+                        # Some (e.g., HybridMPC) allow (Ts, alpha, slew) signature
                         inst = cls(self.problem.N, self.problem.k_coeff, self.problem.speed_min, self.problem.speed_max,
                                    Ts, getattr(self.problem, "alpha", 0.5), self.problem.slew_rate)
                 self.controllers[name] = CtrlAdapter(name, inst)
             except Exception:
+                # Keep the app running even if one controller fails to construct
                 pass
 
-        # prefer PID/Cascade first in display order
+        # Preferred order: PID/Cascade first
         order = []
         for preferred in ["PID", "CascadePID"]:
             if preferred in AVAILABLE:
                 try_add(preferred, AVAILABLE[preferred])
                 if preferred in self.controllers:
                     order.append(preferred)
+
+        # Then others from the registry
         for name, cls in AVAILABLE.items():
             if name not in ("PID", "CascadePID"):
                 try_add(name, cls)
@@ -482,7 +339,6 @@ class App:
 
     def _build_ratio_controls(self):
         """Create spinboxes for per-channel target ratio editing (sum locked to 100%) + stability slider."""
-        # Clear old widgets if rebuilding
         for child in self.ratio_frame.winfo_children():
             child.destroy()
 
@@ -603,7 +459,7 @@ class App:
     def optimize_mlp_once(self):
         if "MLP" not in self.controllers:
             return
-        F_target = to_f64_scalar_tensor(self.total_flow_var.get())
+        F_target = TensorUtils.to_f64_scalar_tensor(self.total_flow_var.get())
         ref_speeds = self.problem.baseline_allocation(self.target_ratio, F_target)
         self.controllers["MLP"].train_once(self.target_ratio, F_target, self.flows_meas_filt,
                                            ref_speeds=ref_speeds, measured_flows=self.flows_meas_filt)
@@ -611,7 +467,7 @@ class App:
     def optimize_gru_once(self):
         if "GRU" not in self.controllers:
             return
-        F_target = to_f64_scalar_tensor(self.total_flow_var.get())
+        F_target = TensorUtils.to_f64_scalar_tensor(self.total_flow_var.get())
         ref_speeds = self.problem.baseline_allocation(self.target_ratio, F_target)
         self.controllers["GRU"].train_once(self.target_ratio, F_target, self.flows_meas_filt,
                                            ref_speeds=ref_speeds, measured_flows=self.flows_meas_filt)
@@ -767,7 +623,7 @@ class App:
         self.entity_title = getattr(self.problem, "entity_title", "Material")
 
         self.target_ratio = self.problem.default_target_ratio.clone()
-        self.F_total_target = to_f64_scalar_tensor(self.problem.default_total_flow)
+        self.F_total_target = TensorUtils.to_f64_scalar_tensor(self.problem.default_total_flow)
         self.total_label_text.set(f"Target Total {self.output_name} ({self.output_unit}):")
         self.total_flow_var.set(float(self.F_total_target.item()))
 
@@ -823,7 +679,7 @@ class App:
         # Apply stability-driven target jitter *before* computing the baseline
         self._maybe_jitter_target_from_slider()
 
-        F_target = to_f64_scalar_tensor(self.total_flow_var.get())
+        F_target = TensorUtils.to_f64_scalar_tensor(self.total_flow_var.get())
         speeds_direct = self.problem.baseline_allocation(self.target_ratio, F_target)
 
         # train/update learnable controllers (off-policy)
@@ -843,17 +699,17 @@ class App:
                 s = s.detach().clone()
             except Exception:
                 s = speeds_direct.clone()
-            s = sanitize(s, speeds_direct)                    # replace non-finite with baseline
-            s = ensure_shape(s, speeds_direct)                # enforce correct N (guards custom controllers)
+            s = TensorUtils.sanitize(s, speeds_direct)                    # replace non-finite with baseline
+            s = TensorUtils.ensure_shape(s, speeds_direct)                # enforce correct N
             suggested[name] = s
 
         # apply selected driver
         drv = self.driver_var.get()
         if self.running:
             speeds_des = suggested.get(drv, speeds_direct)
-            speeds_des = ensure_shape(speeds_des, speeds_direct)
-            self.speeds_cmd = slew_limit(self.speeds_cmd, speeds_des, self.problem.slew_rate,
-                                         self.problem.speed_min, self.problem.speed_max)
+            speeds_des = TensorUtils.ensure_shape(speeds_des, speeds_direct)
+            self.speeds_cmd = TensorUtils.slew_limit(self.speeds_cmd, speeds_des, self.problem.slew_rate,
+                                                     self.problem.speed_min, self.problem.speed_max)
 
         # plant sim step -> filtered measured outputs
         self.flows_meas_filt = self.problem.step(self.speeds_cmd)
@@ -908,11 +764,11 @@ class App:
             if best_idx is not None:
                 err_labels[best_idx].config(foreground="red")
 
+        # Compute MAE and max|error| per controller
         def mae(arr):
             arr = np.asarray(arr, dtype=float)
             return float(np.nanmean(np.abs(arr)))
 
-        # Compute MAE and max|error| per controller
         maes = {name: mae(err_arrays[name]) for name in self.controller_names}
         maxes = {name: float(np.nanmax(np.abs(err_arrays[name]))) for name in self.controller_names}
 
@@ -964,6 +820,7 @@ class App:
 if __name__ == "__main__":
     root = tk.Tk()
     try:
+        # modest DPI scale up for crisper UI on HiDPI displays
         root.tk.call("tk", "scaling", 1.2)
     except Exception:
         pass
