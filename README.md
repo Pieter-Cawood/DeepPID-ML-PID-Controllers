@@ -116,6 +116,155 @@ You can inspect all loss terms and constraints in `controllers.py` (classes `GRU
 Everything is implemented to be **stable‑by‑construction**: we never bypass slew/clamp and we bias to
 baseline allocations when signals are missing or become non‑finite.
 
+---
+
+## How to add a new *Problem* (plant)
+
+Problems live in `deeppid/envs/problems.py` and are registered in `AVAILABLE_PROBLEMS` so the GUI can discover them.
+
+**1) Implement a class** with the following minimal API (feel free to copy an existing one and tweak):
+
+```python
+# deeppid/envs/problems.py
+
+import torch
+
+class MyCustomProblem:
+    def __init__(self, Ts: float):
+        # Dimensions / labels
+        self.N = 3
+        self.labels = [f"Source {i+1}" for i in range(self.N)]
+
+        # Metadata (optional; affects GUI labels)
+        self.output_name = "Flow"
+        self.output_unit = "L/min"
+        self.entity_title = "Material"
+
+        # Constraints and nominal model parameters
+        self.k_coeff = torch.tensor([0.9, 1.1, 0.8], dtype=torch.float64)
+        self.speed_min = torch.tensor([0.0, 0.0, 0.0], dtype=torch.float64)
+        self.speed_max = torch.tensor([100.0, 100.0, 100.0], dtype=torch.float64)
+        self.slew_rate = torch.tensor([5.0, 5.0, 5.0], dtype=torch.float64)  # % per step
+        self.Ts = Ts
+        self.alpha = 0.4  # single-pole plant step factor for filtering
+
+        # Defaults
+        self.default_total_flow = 60.0
+        self.default_target_ratio = torch.ones(self.N, dtype=torch.float64) / self.N
+
+        # Internal filtered measurement
+        self._y = torch.zeros(self.N, dtype=torch.float64)
+
+    def baseline_allocation(self, ratio: torch.Tensor, F_total: torch.Tensor) -> torch.Tensor:
+        \"\"\"Feedforward speeds (simple inverse of k within bounds).\"\"\"
+        s = (ratio * F_total) / (self.k_coeff + 1e-12)
+        return torch.clamp(s, self.speed_min, self.speed_max)
+
+    def step(self, speeds_cmd: torch.Tensor) -> torch.Tensor:
+        \"\"\"One simulation step. Update and return filtered measured outputs.\"\"\"
+        y_raw = self.k_coeff * speeds_cmd
+        self._y = self._y + self.alpha * (y_raw - self._y)
+        return self._y.clone()
+
+    def comp_from_speeds(self, speeds: torch.Tensor) -> torch.Tensor:
+        \"\"\"Return composition (fractions) implied by nominal model for display/metrics.\"\"\"
+        flow = self.k_coeff * speeds
+        tot = flow.sum() + 1e-12
+        return flow / tot
+```
+
+**2) Register it** at the bottom of `problems.py`:
+
+```python
+AVAILABLE_PROBLEMS = {
+    # existing ones...
+    "MyCustomProblem": MyCustomProblem,
+}
+```
+
+Your new problem will now appear in the GUI's *Problem* dropdown.
+
+---
+
+## How to add a new *Controller*
+
+Controllers live in `deeppid/controllers/controllers.py`. The GUI expects them to be discoverable via the
+package registry `deeppid.AVAILABLE` (set up in `deeppid/__init__.py`). The easiest path is to implement
+a class with a **PID-like interface** and wrap it with `CtrlAdapter` automatically:
+
+**Minimum contract (any of these works):**
+- Provide `step(flows_meas_filt, target_ratio, F_total, speeds_direct)` → returns speeds (Tensor of length N); or
+- Provide `forward(target_ratio, F_total, flows_meas_filt)` → returns speeds; and optionally
+- Provide `train_step(...)` if your controller learns online; and
+- Optionally `sync_to(speeds_now, flows_now)` to initialize internal state when the problem changes.
+
+**Constructor signature** should accept (at least) the common parameters so the GUI can instantiate it:
+`(N, k, speed_min, speed_max, Ts, slew_rate)` — extra arguments are fine.
+
+**Skeleton:**
+
+```python
+# deeppid/controllers/controllers.py
+import torch
+
+class MyFancyController(torch.nn.Module):
+    def __init__(self, N, k, speed_min, speed_max, Ts, slew_rate, **kwargs):
+        super().__init__()
+        self.N, self.k = N, k
+        self.speed_min, self.speed_max = speed_min, speed_max
+        self.Ts, self.slew = Ts, slew_rate
+        self.register_buffer("prev_speeds", torch.ones(N, dtype=torch.float64) * 25.0)
+        # your nets/params here...
+        self.net = torch.nn.Sequential(
+            torch.nn.Linear(N + 1 + N + N, 128), torch.nn.ReLU(),
+            torch.nn.Linear(128, N)
+        )
+
+    def _state(self, tr, Ft, y):
+        Ft_n = (Ft / (torch.sum(self.k * self.speed_max).clamp_min(1.0))).clamp(0, 2.0)
+        prev = ((self.prev_speeds - self.speed_min) / (self.speed_max - self.speed_min).clamp_min(1e-6)).clamp(0, 1)
+        flows_n = (y / (Ft + 1e-6)).clamp(0, 2.0)
+        return torch.cat([tr, Ft_n.view(1), flows_n, prev], dim=0)
+
+    def forward(self, target_ratio, F_total, flows_meas_filt):
+        x = self._state(target_ratio, F_total, flows_meas_filt)
+        raw = self.net(x)
+        span = (self.speed_max - self.speed_min).clamp_min(1e-6)
+        s = self.speed_min + span * torch.sigmoid(raw)
+        s = torch.clamp(
+            self.prev_speeds + torch.clamp(s - self.prev_speeds, -self.slew, self.slew),
+            self.speed_min, self.speed_max
+        )
+        self.prev_speeds = s.clone()
+        return s
+
+    # Optional, for adaptive controllers
+    def train_step(self, target_ratio, F_total, flows_meas_filt, **_):
+        # do an update; return the new speeds (or None)
+        return self.forward(target_ratio, F_total, flows_meas_filt)
+```
+
+**Register the controller** name in `deeppid/__init__.py` (registry `AVAILABLE`):  
+
+```python
+from .controllers.controllers import MyFancyController
+
+AVAILABLE["MyFancy"] = MyFancyController
+```
+
+It will then show up in the GUI *Driver* combo-box automatically.
+
+> 🧩 Tip: If your controller already conforms to the `step(...)` signature, the GUI will call it directly.
+> Otherwise it will fall back to `forward(...)`. `CtrlAdapter` normalizes those differences for you.
+
+---
+
+## Testing
+
+- Quick import smoke test: `python -c "import deeppid; print('OK')"`  
+- Run GUI: `python examples/test.py`  
+- Add lightweight unit tests in `tests/` (e.g., `pytest -q`).
+
 ## License
 
 MIT
