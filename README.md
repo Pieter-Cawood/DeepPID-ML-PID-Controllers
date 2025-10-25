@@ -12,6 +12,8 @@
 A **playground** for experimenting with **PID**, **model‑predictive**, and **machine‑learning–based controllers**.  
 DeepPID provides both **traditional** and **neural adaptive controllers** in a single, consistent framework, complete with a live **Tkinter + Matplotlib GUI** for interactive benchmarking.
 
+Built on **Python & PyTorch**, DeepPID leverages the flexibility of the modern scientific stack for real-time simulation, adaptive learning, and comparative benchmarking across controller types.
+
 Through extensive simulation and real-time tests on **nonlinear**, **coupled**, and **time‑varying plants**, it is shown that the **ML‑based adaptive models** (*GRU*, *MLP*, *Transformer*) and the **Hybrid MPC** consistently **outperform conventional PID and Cascade‑PID controllers** in difficult regimes while preserving safety.
 
 The adaptive models achieve:
