@@ -1,4 +1,4 @@
-# DeepPID — A Deep Learning–Based Adaptive PID Controller
+# DeepPID — A PID Playground and Deep Learning–Based Adaptive PID Controller
 
 [![CI](https://github.com/Pieter-Cawood/DeepPID/actions/workflows/ci.yml/badge.svg)](https://github.com/Pieter-Cawood/DeepPID/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
