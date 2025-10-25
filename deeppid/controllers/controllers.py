@@ -1,16 +1,16 @@
-# models.py
+# controllers.py
 # Controller zoo: PID, CascadePID, MLP, GRU, HybridMPC, PIDResidualNN, TransformerCtrl,
 # RLSafetyCtrl, PINNCtrl, AdaptiveHierCtrl.
 #
-# PID & CascadePID now have IMC-style auto-tuning that adapts to both
-# fast (e.g., quadcopter) and slow (e.g., tank) plants and re-tunes online.
+# PID & CascadePID have IMC-style auto-tuning (with online refinement).
 
 import numpy as np
 import torch
 torch.set_default_dtype(torch.float64)
 
 # ---------- generic helpers ----------
-def clip(v, lo, hi): return torch.min(torch.max(v, lo), hi)
+def clip(v, lo, hi): 
+    return torch.min(torch.max(v, lo), hi)
 
 def slew_limit(prev, desired, max_delta, lo, hi):
     return clip(prev + torch.clamp(desired - prev, -max_delta, max_delta), lo, hi)
@@ -25,9 +25,8 @@ def _total_scale(k, speed_max):
 def _tau_from_alpha(Ts, alpha):
     """
     Map discrete 1st-order step y_{t+1} = y_t + alpha (k s - y_t)
-    to an equivalent continuous time constant:
-      pole z = 1 - alpha  ->  tau ≈ Ts / -ln(1 - alpha)
-    Fallback to Ts/alpha for tiny alpha.
+    to an equivalent continuous time constant approx.:
+      z = 1 - alpha  ->  tau ≈ Ts / -ln(1 - alpha)
     """
     a = float(alpha)
     if a <= 1e-6: return 10.0 * Ts
@@ -38,14 +37,11 @@ def _tau_from_alpha(Ts, alpha):
         return Ts / max(a, 1e-6)
 
 def _classify_fast(N, tau_p):
-    """
-    Heuristic classifier: quadcopter (N<=4) or generally fast dynamics (tau_p < ~0.8 s)
-    gets 'fast' tuning; otherwise 'slow'.
-    """
+    """Heuristic: small-N/fast-dynamics use more aggressive tuning."""
     return (N <= 4) or (tau_p <= 0.8)
 
 # ======================================================================
-#  PID (best-in-class single loop)  — IMC auto-tuned + online refinement
+#  PID (single loop)  — IMC auto-tuned + online refinement
 # ======================================================================
 class PIDController:
     def __init__(self, N, k, speed_min, speed_max, Ts, plant_alpha, slew_rate):
@@ -61,8 +57,8 @@ class PIDController:
         self.prev_meas = torch.zeros(N, dtype=dt, device=d)
         self.prev_out  = torch.ones (N, dtype=dt, device=d) * 25.0
 
-        # Initial IMC tuning (and slots for gains)
-        self.Kp_f = torch.full((N,), 1.0, dtype=dt, device=d)  # flow-domain gain (we divide by k later)
+        # Initial IMC tuning (flow-domain gains; divided by k in use)
+        self.Kp_f = torch.full((N,), 1.0, dtype=dt, device=d)
         self.Ki_f = torch.full((N,), 0.0, dtype=dt, device=d)
         self.Kd_f = torch.full((N,), 0.0, dtype=dt, device=d)
 
@@ -80,28 +76,17 @@ class PIDController:
 
     # ----- IMC tuning (flow-domain) -----
     def _imc_retune(self, hard=False):
-        """
-        Compute IMC-PID params from tau_p. We produce flow-domain gains:
-          Kp_f = τp/λ
-          Ki_f = (τp/λ)*(1/Ti),  with Ti = τp
-          Kd_f = (τp/λ)*Td,      with Td = c_D * τp
-        Controller applies /k to map into speed-domain.
-        """
         tau_p = max(self.tau_p, 1e-6)
         fast = self.fast_mode
 
-        # Choose IMC filter λ, integral/derivative times and derivative filter
         lam = (0.35 * tau_p) if fast else (1.20 * tau_p)
         Ti  = tau_p
         Td  = (0.25 * tau_p) if fast else (0.10 * tau_p)
         tau_d_filt = 0.10 * tau_p if fast else 0.05 * tau_p
 
-        # Flow-domain "Kc" == τp/λ (since speed-domain Kc = (τp/(Kλ)); we divide by k later)
         Kp_f_new = (tau_p / max(lam, 1e-6))
         Ki_f_new = Kp_f_new / max(Ti, 1e-6)
         Kd_f_new = Kp_f_new * Td
-
-        # Anti-windup time
         Tt_new = max(0.5 * Ti, 0.05)
 
         if hard:
@@ -111,8 +96,7 @@ class PIDController:
             self.tau_d = tau_d_filt
             self.Tt    = Tt_new
         else:
-            # Smooth update to avoid jerk
-            a = 0.10  # smoothing
+            a = 0.10
             self.Kp_f = (1 - a) * self.Kp_f + a * Kp_f_new
             self.Ki_f = (1 - a) * self.Ki_f + a * Ki_f_new
             self.Kd_f = (1 - a) * self.Kd_f + a * Kd_f_new
@@ -121,10 +105,8 @@ class PIDController:
 
     def _update_alpha_estimate(self, y_now):
         """
-        Update alpha_hat from one-step relation:
-          Δy ≈ α (k*prev_out - prev_meas)
-          => α_inst = Δy / (k*u_prev - y_prev)
-        Use median across channels (robust) and EMA.
+        Δy ≈ α (k*prev_out - prev_meas)  -> α_inst = Δy / (k*u_prev - y_prev)
+        Use per-channel robust median then EMA.
         """
         y_prev = self.prev_meas
         u_prev = self.prev_out
@@ -139,7 +121,6 @@ class PIDController:
         fast_new = _classify_fast(self.N, new_tau)
         if fast_new != self.fast_mode:
             self.fast_mode = fast_new
-        # only retune if significant change
         if abs(new_tau - self.tau_p) / max(self.tau_p, 1e-6) > 0.10:
             self.tau_p = 0.9 * self.tau_p + 0.1 * new_tau
             self._imc_retune(hard=False)
@@ -150,9 +131,6 @@ class PIDController:
         self.prev_meas = flows_now.detach().clone()
         self.d_y.zero_()
         self.int = torch.clamp(self.int, -2000.0, 2000.0)
-
-        # Re-seed online estimator from current step
-        # (keeps previous tau_p but nudges gains immediately)
         self._update_alpha_estimate(self.prev_meas)
         self._imc_retune(hard=False)
 
@@ -194,9 +172,7 @@ class PIDController:
 
     # ----- public step -----
     def step(self, flows_meas_filt, target_ratio, F_total, s_ff):
-        # Online re-tune from observed step
         self._update_alpha_estimate(flows_meas_filt)
-
         flow_sp = target_ratio * F_total
         u_unsat, e, Ki_s = self._core(flow_sp, flows_meas_filt, s_ff)
         u_cmd = self._int_aw(u_unsat, e, Ki_s)
@@ -241,7 +217,6 @@ class CascadePIDController:
         # Outer loops (total & composition)
         self.gamma = 1.0
         self.gamma_int = 0.0
-        # these will be set by _retune_outer
         self.Kp_tot, self.Ki_tot = 0.25, 0.12
         self.gamma_min, self.gamma_max = 0.7, 1.3
         self.gamma_int_min, self.gamma_int_max = -0.5, 0.5
@@ -292,14 +267,11 @@ class CascadePIDController:
             self.Tt    = (1 - a) * self.Tt    + a * Tt_new
 
     def _retune_outer(self, hard=False):
-        # Scale outer loops by speed of inner plant: faster plant -> stronger outer PI
         fast = self.fast_mode
         Kp_tot_new = 0.35 if fast else 0.25
         Ki_tot_new = 0.18 if fast else 0.12
-
         Kp_comp_new = 0.14 if fast else 0.10
         Ki_comp_new = 0.07 if fast else 0.05
-
         if hard:
             self.Kp_tot, self.Ki_tot = Kp_tot_new, Ki_tot_new
             self.Kp_comp, self.Ki_comp = Kp_comp_new, Ki_comp_new
@@ -392,7 +364,6 @@ class CascadePIDController:
 
     # ----- Public step -----
     def step(self, flows_meas_filt, ratio_sp, F_total_sp, _unused=None):
-        # Online retune from response
         self._update_alpha_estimate(flows_meas_filt)
 
         # Outer loops
@@ -426,9 +397,14 @@ class MLPController(torch.nn.Module):
             torch.nn.Linear(hidden, hidden), torch.nn.ReLU(),
             torch.nn.Linear(hidden, N)
         )
+        # buffers
         d, dt = k.device, k.dtype
-        self.prev_speeds = torch.ones(N, dtype=dt, device=d) * 25.0
+        self.register_buffer("prev_speeds", torch.ones(N, dtype=dt, device=d) * 25.0)
+        # move & dtype
+        self.to(d).double()
+        # optimizer after move
         self.opt = torch.optim.Adam(self.parameters(), lr=3e-3)
+
         self.train_steps = train_steps
         self.W_COMP, self.W_TOTAL, self.W_SMOOTH = W_COMP, W_TOTAL, W_SMOOTH
         self.W_BOUND, self.W_REF, self.W_MEAS = W_BOUND, W_REF, W_MEAS
@@ -436,17 +412,22 @@ class MLPController(torch.nn.Module):
     def _state(self, target_ratio, F_total, y):
         F_norm = (F_total / _total_scale(self.k, self.speed_max)).clamp(0, 2.0)
         flows_norm = (y / (F_total + 1e-6)).clamp(0.0, 2.0)
-        prev_norm = (self.prev_speeds / 100.0).clamp(0.0, 1.0)
+        prev_norm = ((self.prev_speeds - self.speed_min) /
+                     (self.speed_max - self.speed_min).clamp_min(1e-6)).clamp(0.0, 1.0)
         return torch.cat([target_ratio, F_norm.view(1), flows_norm, prev_norm], dim=0)
+
+    def _map_logits_to_speed(self, raw):
+        span = (self.speed_max - self.speed_min).clamp_min(1e-6)
+        return self.speed_min + span * torch.sigmoid(raw)
 
     def forward(self, target_ratio, F_total, y):
         x = self._state(target_ratio, F_total, y)
         raw = self.net(x)
-        speeds = 100.0 * torch.sigmoid(raw)
-        speeds = slew_limit(self.prev_speeds, speeds, self.slew, self.speed_min, self.speed_max)
-        return clip(speeds, self.speed_min, self.speed_max)
+        s = self._map_logits_to_speed(raw)
+        s = slew_limit(self.prev_speeds, s, self.slew, self.speed_min, self.speed_max)
+        return clip(s, self.speed_min, self.speed_max)
 
-    def train_step(self, target_ratio, F_total, y, ref_speeds=None, measured_flows=None):
+    def train_step(self, target_ratio, F_total, y, ref_speeds=None, measured_flows=None, **_):
         for _ in range(self.train_steps):
             self.opt.zero_grad()
             s = self.forward(target_ratio, F_total, y)
@@ -484,26 +465,39 @@ class GRUController(torch.nn.Module):
         self.seq_len, self.train_steps = seq_len, train_steps
         self.W_COMP, self.W_TOTAL, self.W_SMOOTH = W_COMP, W_TOTAL, W_SMOOTH
         self.W_BOUND, self.W_REF, self.W_MEAS = W_BOUND, W_REF, W_MEAS
+
         in_dim = N + 1 + N + N
         self.gru = torch.nn.GRU(in_dim, hidden, batch_first=True)
         self.head = torch.nn.Sequential(torch.nn.Linear(hidden, 128), torch.nn.ReLU(), torch.nn.Linear(128, N))
-        d, dt = k.device, k.dtype
-        self.prev_speeds = torch.ones(N, dtype=dt, device=d) * 25.0
-        self.opt = torch.optim.Adam(self.parameters(), lr=2.5e-3)
-        self.buf_inputs, self.buf_ref, self.buf_meas = [], [], []
-        self.h = torch.zeros(1, 1, hidden, dtype=dt, device=d)
 
-    def reset_hidden(self): self.h.zero_()
+        d, dt = k.device, k.dtype
+        self.register_buffer("prev_speeds", torch.ones(N, dtype=dt, device=d) * 25.0)
+        self.register_buffer("h", torch.zeros(1, 1, hidden, dtype=dt, device=d))
+
+        self.buf_inputs, self.buf_ref, self.buf_meas = [], [], []
+
+        # move & dtype; optimizer after
+        self.to(d).double()
+        self.opt = torch.optim.Adam(self.parameters(), lr=2.5e-3)
+
+    def reset_hidden(self): 
+        self.h.zero_()
 
     def _x(self, tr, Ft, y):
         F_norm = (Ft / _total_scale(self.k, self.speed_max)).clamp(0, 2.0)
         flows_norm = (y / (Ft + 1e-6)).clamp(0.0, 2.0)
-        prev_norm = (self.prev_speeds / 100.0).clamp(0.0, 1.0)
+        prev_norm = ((self.prev_speeds - self.speed_min) /
+                     (self.speed_max - self.speed_min).clamp_min(1e-6)).clamp(0.0, 1.0)
         return torch.cat([tr, F_norm.view(1), flows_norm, prev_norm], dim=0)
+
+    def _map_logits_to_speed(self, raw):
+        span = (self.speed_max - self.speed_min).clamp_min(1e-6)
+        return self.speed_min + span * torch.sigmoid(raw)
 
     def forward_step(self, x, h):
         out, h1 = self.gru(x, h)
-        raw = self.head(out[:, -1, :]); s = 100.0 * torch.sigmoid(raw.squeeze(0))
+        raw = self.head(out[:, -1, :])
+        s = self._map_logits_to_speed(raw.squeeze(0))
         s = slew_limit(self.prev_speeds, s, self.slew, self.speed_min, self.speed_max)
         return clip(s, self.speed_min, self.speed_max), h1
 
@@ -519,7 +513,7 @@ class GRUController(torch.nn.Module):
         if len(self.buf_inputs) > self.seq_len:
             self.buf_inputs.pop(0); self.buf_ref.pop(0); self.buf_meas.pop(0)
 
-    def train_step(self, tr, Ft, y, ref_speeds=None, measured_flows=None):
+    def train_step(self, tr, Ft, y, ref_speeds=None, measured_flows=None, **_):
         x = self._x(tr, Ft, y); self._push(x, ref_speeds, measured_flows)
         if len(self.buf_inputs) < 4:
             return self._warm(tr, Ft, y, ref_speeds, measured_flows)
@@ -527,9 +521,13 @@ class GRUController(torch.nn.Module):
         REFS = torch.stack(self.buf_ref).unsqueeze(0); MEAS = torch.stack(self.buf_meas).unsqueeze(0)
         for _ in range(self.train_steps):
             self.opt.zero_grad()
-            h0 = torch.zeros_like(self.h); out, _ = self.gru(X, h0)
-            logits = self.head(out); s = 100.0 * torch.sigmoid(logits)
-            flow = self.k.view(1,1,self.N) * s; tot = flow.sum(2, keepdim=True) + 1e-12; comp = flow / tot
+            h0 = torch.zeros_like(self.h)
+            out, _ = self.gru(X, h0)
+            logits = self.head(out)
+            s = self._map_logits_to_speed(logits)
+            flow = self.k.view(1,1,self.N) * s
+            tot = flow.sum(2, keepdim=True) + 1e-12
+            comp = flow / tot
             trT = tr.view(1,1,self.N).expand_as(comp); FtT = Ft.view(1,1,1).expand_as(tot)
             comp_err = ((comp - trT)**2).sum(); total_err = ((tot - FtT)**2).sum()
             s_prev = torch.roll(s, 1, dims=1); s_prev[:,0,:] = self.prev_speeds.view(1,1,-1)
@@ -554,7 +552,9 @@ class GRUController(torch.nn.Module):
         self.opt.zero_grad()
         h0 = torch.zeros_like(self.h)
         x = self._x(tr, Ft, y).view(1,1,-1)
-        out, _ = self.gru(x, h0); raw = self.head(out); s = 100.0 * torch.sigmoid(raw).squeeze(0).squeeze(0)
+        out, _ = self.gru(x, h0)
+        raw = self.head(out)
+        s = self._map_logits_to_speed(raw).squeeze(0).squeeze(0)
         flow = self.k * s; tot = flow.sum() + 1e-12; comp = flow / tot
         comp_err = ((comp - tr)**2).sum(); total_err = (tot - Ft).pow(2)
         smooth = ((s - self.prev_speeds)**2).sum()
@@ -570,7 +570,7 @@ class GRUController(torch.nn.Module):
         loss = (3.0*comp_err + 6.0*total_err + 0.10*smooth + 0.08*bound_pen + 0.03*refL + 0.25*meas_term)
         loss.backward(); self.opt.step()
         with torch.no_grad():
-            s = 100.0 * torch.sigmoid(self.head(out)[:, -1, :].squeeze(0))
+            s = self._map_logits_to_speed(self.head(out)[:, -1, :].squeeze(0))
             s = slew_limit(self.prev_speeds, s, self.slew, self.speed_min, self.speed_max)
             s = clip(s, self.speed_min, self.speed_max); self.prev_speeds = s.clone()
         return s.clone()
@@ -580,8 +580,8 @@ class HybridMPCController(torch.nn.Module):
     def __init__(self, N, k, speed_min, speed_max, Ts, *args, horizon=5, opt_iters=8, lr=0.05):
         super().__init__()
         # Accept either:
-        #   (Ts, slew_rate)                          <- original
-        #   (Ts, plant_alpha, slew_rate)             <- app.py fallback path
+        #   (Ts, slew_rate)
+        #   (Ts, plant_alpha, slew_rate)
         if len(args) == 1:
             plant_alpha = 0.5
             slew_rate = args[0]
@@ -594,7 +594,7 @@ class HybridMPCController(torch.nn.Module):
         self.N, self.k = N, k
         self.speed_min, self.speed_max = speed_min, speed_max
         self.Ts, self.slew = Ts, slew_rate
-        self.alpha_p = float(plant_alpha)  # used by _phys()
+        self.alpha_p = float(plant_alpha)  # physics step
         self.H, self.opt_iters, self.lr = horizon, opt_iters, lr
 
         in_dim = 2*N  # [flows, speeds]
@@ -604,18 +604,74 @@ class HybridMPCController(torch.nn.Module):
             torch.nn.Linear(hid, hid),   torch.nn.Tanh(),
             torch.nn.Linear(hid, N)
         )
-        self.prev_speeds = torch.ones(N, dtype=k.dtype, device=k.device) * 25.0
+
+        d, dt = k.device, k.dtype
+        self.register_buffer("prev_speeds", torch.ones(N, dtype=dt, device=d) * 25.0)
+
+        self.to(d).double()
         self.opt_res = torch.optim.Adam(self.residual.parameters(), lr=2.0e-3)
 
     def _phys(self, y, s):
         # 1-step physics: y -> y + alpha*(k*s - y)
         return y + self.alpha_p * (self.k * s - y)
 
+    def _map_logits_to_speed(self, raw):
+        span = (self.speed_max - self.speed_min).clamp_min(1e-6)
+        return self.speed_min + span * torch.sigmoid(raw)
+
+    def step(self, y, tr, Ft, s_ff=None, **_):
+        """
+        Short-horizon shooting with gradients on composition/total, plus residual model.
+        """
+        # Initialize action sequence with current prev + residual NN single-step bias
+        with torch.no_grad():
+            inp = torch.cat([y, self.prev_speeds], dim=0)
+            bias = self._map_logits_to_speed(self.residual(inp))
+            s0 = clip(self.prev_speeds + 0.2*(bias - self.prev_speeds), self.speed_min, self.speed_max)
+
+        S = s0.repeat(self.H, 1)  # (H, N)
+        S.requires_grad_(True)
+        opt = torch.optim.SGD([S], lr=self.lr, momentum=0.0)
+
+        for _ in range(self.opt_iters):
+            opt.zero_grad()
+            y_sim = y.detach().clone()
+            J = torch.tensor(0.0, dtype=y.dtype, device=y.device)
+            for t in range(self.H):
+                s_t = S[t]
+                # simple residual correction
+                inp = torch.cat([y_sim, s_t], dim=0)
+                s_t_corr = clip(s_t + 0.1*(self._map_logits_to_speed(self.residual(inp)) - s_t),
+                                self.speed_min, self.speed_max)
+                y_sim = self._phys(y_sim, s_t_corr)
+                tot = y_sim.sum() + 1e-12
+                comp = y_sim / tot
+                J = J + 3.0*((comp - tr)**2).sum() + 6.0*(tot - Ft).pow(2)
+                if t > 0:
+                    J = J + 0.05*((S[t] - S[t-1])**2).sum()
+
+            # soft barriers to keep within [min,max]
+            span = (self.speed_max - self.speed_min).clamp_min(1e-6)
+            tau = (S - self.speed_min) / span
+            J = J + 0.08 * (-(torch.log(tau.clamp_min(0.02)) + torch.log((1 - tau).clamp_min(0.02)))).sum()
+
+            J.backward()
+            opt.step()
+            with torch.no_grad():
+                S[:] = torch.clamp(S, self.speed_min, self.speed_max)
+
+        with torch.no_grad():
+            s = S[0]
+            s = slew_limit(self.prev_speeds, s, self.slew, self.speed_min, self.speed_max)
+            s = clip(s, self.speed_min, self.speed_max)
+            self.prev_speeds = s.clone()
+            return s
+
 # ---------- PID + NN Residual ----------
 class PIDResidualNN:
     """
-    Base PID (single-loop) plus a small residual NN that outputs delta speeds.
-    Residual is rate-limited and small-magnitude (via penalty) to ensure stability.
+    PID (single-loop) plus a small residual NN that outputs delta speeds.
+    Residual is rate-limited and small-magnitude to ensure stability.
     """
     def __init__(self, pid: PIDController, speed_min, speed_max, slew_rate):
         self.pid = pid
@@ -627,17 +683,16 @@ class PIDResidualNN:
             torch.nn.Linear(hid, hid), torch.nn.ReLU(),
             torch.nn.Linear(hid, N)
         )
+        self.nn.to(pid.k.device).double()
         self.opt = torch.optim.Adam(self.nn.parameters(), lr=2.0e-3)
         self.prev_out = torch.ones(N, dtype=pid.k.dtype, device=pid.k.device) * 0.0
 
     def _x(self, tr, Ft, y, s_pid):
-        # FIX: normalize Ft using the PID's k/speed_max (self.pid.k), not self.k
         Ft_n = (Ft / _total_scale(self.pid.k, self.speed_max)).clamp(0, 2.0)
         return torch.cat([tr, Ft_n.view(1), y, s_pid/100.0], dim=0)
 
-    def step(self, y, tr, Ft, s_ff):
-        s_pid = self.pid.step(y, tr, Ft, s_ff)
-        # residual action
+    def step(self, y, tr, Ft, s_ff=None, **_):
+        s_pid = self.pid.step(y, tr, Ft, (s_ff if s_ff is not None else self.pid.prev_out))
         x = self._x(tr, Ft, y, s_pid)
         delta = self.nn(x)
         s_res = slew_limit(self.prev_out, delta, float(self.slew),
@@ -675,33 +730,42 @@ class TransformerCtrl(torch.nn.Module):
         enc_layer = torch.nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, batch_first=True, activation='relu')
         self.enc = torch.nn.TransformerEncoder(enc_layer, num_layers=nlayers)
         self.head = torch.nn.Sequential(torch.nn.Linear(d_model, 128), torch.nn.ReLU(), torch.nn.Linear(128, N))
+
         d, dt = k.device, k.dtype
-        self.prev_speeds = torch.ones(N, dtype=dt, device=d) * 25.0
-        self.opt = torch.optim.Adam(self.parameters(), lr=2.5e-3)
+        self.register_buffer("prev_speeds", torch.ones(N, dtype=dt, device=d) * 25.0)
         self.buf = []
+
+        self.to(d).double()
+        self.opt = torch.optim.Adam(self.parameters(), lr=2.5e-3)
 
     def _vec(self, tr, Ft, y):
         Ft_n = (Ft / _total_scale(self.k, self.speed_max)).clamp(0, 2.0)
-        prev = (self.prev_speeds / 100.0).clamp(0,1)
+        prev = ((self.prev_speeds - self.speed_min) /
+                (self.speed_max - self.speed_min).clamp_min(1e-6)).clamp(0,1)
         flows_n = (y / (Ft + 1e-6)).clamp(0,2)
         return torch.cat([tr, Ft_n.view(1), flows_n, prev], dim=0)
+
+    def _map_logits_to_speed(self, raw):
+        span = (self.speed_max - self.speed_min).clamp_min(1e-6)
+        return self.speed_min + span * torch.sigmoid(raw)
 
     def forward(self, tr, Ft, y):
         v = self._vec(tr, Ft, y); self.buf.append(v.detach())
         if len(self.buf) > self.ctx: self.buf.pop(0)
         X = torch.stack(self.buf, dim=0).unsqueeze(0)  # (1,T,D)
         Z = self.enc(self.embed(X))
-        raw = self.head(Z[:, -1, :]); s = 100.0 * torch.sigmoid(raw.squeeze(0))
+        raw = self.head(Z[:, -1, :])
+        s = self._map_logits_to_speed(raw.squeeze(0))
         s = slew_limit(self.prev_speeds, s, self.slew, self.speed_min, self.speed_max)
         s = clip(s, self.speed_min, self.speed_max); self.prev_speeds = s.clone()
         return s
 
-    def train_step(self, tr, Ft, y):
+    def train_step(self, tr, Ft, y, *_, **__):
         if len(self.buf) < max(4, self.ctx//3): return self.prev_speeds.clone()
         X = torch.stack(self.buf, dim=0).unsqueeze(0)
         self.opt.zero_grad()
         Z = self.enc(self.embed(X))
-        s = 100.0 * torch.sigmoid(self.head(Z[:, -1, :]).squeeze(0))
+        s = self._map_logits_to_speed(self.head(Z[:, -1, :]).squeeze(0))
         flow = self.k * s; tot = flow.sum() + 1e-12; comp = flow / tot
         comp_err = ((comp - tr)**2).sum(); total_err = (tot - Ft).pow(2)
         smooth = ((s - self.prev_speeds)**2).sum()
@@ -731,37 +795,45 @@ class RLSafetyCtrl(torch.nn.Module):
             torch.nn.Linear(128, N)
         )
         d, dt = k.device, k.dtype
-        self.prev_speeds = torch.ones(N, dtype=dt, device=d) * 25.0
+        self.register_buffer("prev_speeds", torch.ones(N, dtype=dt, device=d) * 25.0)
+        self.to(d).double()
         self.opt = torch.optim.Adam(self.actor.parameters(), lr=2.0e-3)
 
     def _state(self, tr, Ft, y):
-        Ft_n = (Ft / _total_scale(self.k, self.speed_max)).clamp(0, 2.0); prev = (self.prev_speeds/100.0).clamp(0,1)
+        Ft_n = (Ft / _total_scale(self.k, self.speed_max)).clamp(0, 2.0)
+        prev = ((self.prev_speeds - self.speed_min) /
+                (self.speed_max - self.speed_min).clamp_min(1e-6)).clamp(0,1)
         flows_n = (y / (Ft + 1e-6)).clamp(0,2)
         return torch.cat([tr, Ft_n.view(1), flows_n, prev], dim=0)
 
+    def _map_logits_to_speed(self, raw):
+        span = (self.speed_max - self.speed_min).clamp_min(1e-6)
+        return self.speed_min + span * torch.sigmoid(raw)
+
     def forward(self, tr, Ft, y):
         x = self._state(tr, Ft, y)
-        raw = self.actor(x); s = 100.0 * torch.sigmoid(raw)
+        raw = self.actor(x)
+        s = self._map_logits_to_speed(raw)
         s = slew_limit(self.prev_speeds, s, self.slew, self.speed_min, self.speed_max)
         s = clip(s, self.speed_min, self.speed_max); self.prev_speeds = s.clone()
         return s
 
-    def train_step(self, tr, Ft, y):
+    def train_step(self, tr, Ft, y, *_, **__):
+        prev = self.prev_speeds.detach().clone()  # snapshot for smoothness
         self.opt.zero_grad()
         s = self.forward(tr, Ft, y)
         flow = self.k * s; tot = flow.sum() + 1e-12; comp = flow / tot
-        loss = 3.0*((comp - tr)**2).sum() + 6.0*(tot - Ft).pow(2) + 0.05*((s - self.prev_speeds)**2).sum()
+        smooth = ((s - prev)**2).sum()
+        loss = 3.0*((comp - tr)**2).sum() + 6.0*(tot - Ft).pow(2) + 0.05*smooth
         loss.backward(); self.opt.step()
         return self.prev_speeds.clone()
 
 # ---------- Physics-Informed NN ----------
 class PINNCtrl(MLPController):
     """
-    Same architecture as MLP but adds stronger physics terms:
-    - mass conservation already inherent; we add per-channel non-negativity soft barrier
-    - optional equality on sum of ratios (implicitly holds) and smoothness in speeds/flows
+    Same architecture as MLP but adds stronger physics terms.
     """
-    def train_step(self, tr, Ft, y, ref_speeds=None, measured_flows=None):
+    def train_step(self, tr, Ft, y, ref_speeds=None, measured_flows=None, **_):
         for _ in range(self.train_steps):
             self.opt.zero_grad()
             s = self.forward(tr, Ft, y)
@@ -782,8 +854,7 @@ class PINNCtrl(MLPController):
 class AdaptiveHierCtrl(CascadePIDController):
     """
     Cascade PID with a tiny tuner NN that adjusts inner-loop gains based on recent signals.
-    Uses log-scale, smoothed, and tightly clamped updates relative to the *baseline* gains
-    to avoid runaway growth/decay over long runs.
+    Uses log-scale, smoothed, and tightly clamped updates relative to the baseline gains.
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -808,44 +879,37 @@ class AdaptiveHierCtrl(CascadePIDController):
         self.log_kd = torch.zeros(N, dtype=dt, device=dev)
 
         # Update smoothing and clamps
-        self.tune_alpha = 0.05       # smoothing for log updates
-        self.tune_scale = 0.05       # overall mapping from tuner output -> log step
-        self.log_min = torch.full((N,), np.log(0.3), dtype=dt, device=dev)  # -1.204...
-        self.log_max = torch.full((N,), np.log(3.0), dtype=dt, device=dev)  # +1.098...
+        self.tune_alpha = 0.05
+        self.tune_scale = 0.05
+        self.log_min = torch.full((N,), np.log(0.3), dtype=dt, device=dev)
+        self.log_max = torch.full((N,), np.log(3.0), dtype=dt, device=dev)
 
     def _update_hist(self, e_abs, e_int, d_meas):
-        # Exponential moving averages of magnitudes (keep them bounded & smooth)
         self.err_hist[0] = ema(self.err_hist[0], e_abs, self.alpha_hist)
         self.err_hist[1] = ema(self.err_hist[1], e_int, self.alpha_hist)
         self.err_hist[2] = ema(self.err_hist[2], d_meas.abs(), self.alpha_hist)
 
     def _apply_log_gains(self):
-        # Gains = baseline * exp(log_offset), with clamping
         kp = self.Kp_base * torch.exp(self.log_kp.clamp(self.log_min, self.log_max))
         ki = self.Ki_base * torch.exp(self.log_ki.clamp(self.log_min, self.log_max))
         kd = self.Kd_base * torch.exp(self.log_kd.clamp(self.log_min, self.log_max))
-        # Keep reasonable absolute bounds as a last resort
         self.Kp_f = torch.clamp(kp, 1e-6, 1e6)
         self.Ki_f = torch.clamp(ki, 1e-6, 1e6)
         self.Kd_f = torch.clamp(kd, 1e-6, 1e6)
 
     def _tune(self):
-        # Features: [|e|_ema, |int|, |d_meas|_ema] -> deltas
         x = torch.cat([self.err_hist[0], self.err_hist[1], self.err_hist[2]], dim=0).detach()
         delta = self.tuner(x)  # (3N,)
         dKp, dKi, dKd = delta[:self.N], delta[self.N:2*self.N], delta[2*self.N:]
 
-        # Map to small, smooth log-steps; tanh bounds to [-1,1]
         step_kp = self.tune_scale * torch.tanh(dKp)
         step_ki = self.tune_scale * torch.tanh(dKi)
         step_kd = self.tune_scale * torch.tanh(dKd)
 
-        # EMA in log space
         self.log_kp = (1 - self.tune_alpha) * self.log_kp + self.tune_alpha * step_kp
         self.log_ki = (1 - self.tune_alpha) * self.log_ki + self.tune_alpha * step_ki
         self.log_kd = (1 - self.tune_alpha) * self.log_kd + self.tune_alpha * step_kd
 
-        # Clamp and apply to actual gains
         self._apply_log_gains()
 
     def step(self, flows_meas_filt, ratio_sp, F_total_sp, _unused=None):

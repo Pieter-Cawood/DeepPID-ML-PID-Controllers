@@ -1,9 +1,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# File: app.py
-# GUI app (Tkinter + Matplotlib) that compares controllers from models.py
-# against interchangeable "Problem" dynamics from problems.py.
+# File: test.py
+# GUI app (Tkinter + Matplotlib) that compares controllers from
+# deeppid.controllers.controllers against interchangeable "Problem"
+# dynamics from deeppid.envs.problems.
 #
-# Now supports variable N and per-problem units/titles:
+# Supports variable N and per-problem units/titles:
 #   • problem.labels            -> row labels (e.g., ["Source 1", ...] or ["Rotor 1", ...])
 #   • problem.output_name       -> "Flow" / "Thrust" / etc. (optional, defaults to "Flow")
 #   • problem.output_unit       -> "L/min" / "N" / etc. (optional, defaults to "L/min")
@@ -20,19 +21,38 @@ import importlib
 # --- Matplotlib for interactive chart ---
 import matplotlib
 matplotlib.use("TkAgg")
+import matplotlib as mpl
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-# Import problems (plants)
+# Make transparency the default in case other figures are created later
+mpl.rcParams["figure.facecolor"] = "none"
+mpl.rcParams["axes.facecolor"] = "none"
+
+# Import problems (plants) — keep using your existing problems module
 from deeppid.envs.problems import *
 
 torch.set_default_dtype(torch.float64)
 
-# -------------------------- Import controllers robustly --------------------------
+# -------------------------- Import controllers (new path) --------------------------
 AVAILABLE = {}
 
 def _safe_import(class_name, menu_name=None):
-    """Try absolute then relative import so this works both as a script and a package."""
+    """
+    Try importing controller classes from the new package path first:
+      deeppid.controllers.controllers
+    Fall back to legacy local imports if present.
+    """
+    # 1) New canonical location
+    try:
+        mod = importlib.import_module("deeppid.controllers.controllers")
+        cls = getattr(mod, class_name)
+        AVAILABLE[menu_name or class_name] = cls
+        return
+    except Exception:
+        pass
+
+    # 2) Legacy flat file `models.py` next to this script (if you still have it)
     try:
         mod = importlib.import_module("models")
         cls = getattr(mod, class_name)
@@ -40,6 +60,8 @@ def _safe_import(class_name, menu_name=None):
         return
     except Exception:
         pass
+
+    # 3) Legacy relative import (if this script is part of a package)
     try:
         mod = importlib.import_module(".models", package=__package__)
         cls = getattr(mod, class_name)
@@ -48,7 +70,7 @@ def _safe_import(class_name, menu_name=None):
     except Exception:
         pass
 
-# Core controllers (names must match your models.py)
+# Core controllers (names must match your class names in controllers.py)
 _safe_import("PIDController", "PID")
 _safe_import("CascadePIDController", "CascadePID")
 _safe_import("MLPController", "MLP")
@@ -251,7 +273,7 @@ class App:
         self.ratio_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6), pady=(0, 8))
         self._build_ratio_controls()
 
-        # Right column, Row 0: Applied Driver (Speeds & Outputs)
+        # Right column, Row 0: Applied Driver (Speeds & Measured Outputs)
         self.applied_frame = ttk.LabelFrame(main, text="Applied Driver: Speeds & Measured Outputs", padding=10)
         self.applied_frame.grid(row=0, column=1, sticky="nsew", padx=(6, 0), pady=(0, 8))
 
@@ -305,26 +327,48 @@ class App:
         chart_frame.grid(row=0, column=1, sticky="nsew", padx=(0, 0), pady=(0, 10))
         bottom.grid_rowconfigure(0, weight=1)
 
+        # Create the figure/axes with transparent backgrounds
         self.fig = Figure(figsize=(7.0, 3.6), dpi=100)
+        self.fig.patch.set_facecolor("none")
         self.ax = self.fig.add_subplot(111)
+        self.ax.set_facecolor("none")
         self.ax.set_xlabel("Step")
         self.ax.set_ylabel("MAE (pp)")
         self.ax.grid(True, alpha=0.3)
 
-        self.lines = {}  # name -> Line2D
+        # Build lines, then legend (only if we actually have controllers)
+        self.lines = {}
         for name in self.controller_names:
             line, = self.ax.plot([], [], label=name)
             self.lines[name] = line
-        self.ax.legend(loc="upper right")
+        if self.controller_names:
+            self.ax.legend(loc="upper right", framealpha=0.0)
 
+        # Create and style the Tk canvas hosting the figure
         self.canvas = FigureCanvasTkAgg(self.fig, master=chart_frame)
-        self.canvas.draw()
-        self.canvas.get_tk_widget().pack(side="top", fill="both", expand=True)
+        w = self.canvas.get_tk_widget()
 
+        # Resolve a ttk background color to match the parent frame
+        style = ttk.Style(chart_frame)
+        bg = (
+            style.lookup("TLabelframe", "background")
+            or style.lookup("TFrame", "background")
+            or chart_frame.master.cget("bg")
+            or "#FFFFFF"
+        )
+
+        # Apply to the tk.Canvas that hosts the figure
+        # Use 'bg' (alias of 'background' on Tk) and remove highlight border
+        w.configure(bg=bg, highlightthickness=0)
+        w.pack(side="top", fill="both", expand=True)
+        self.canvas.draw()
+
+        # Toolbar
         self.toolbar = NavigationToolbar2Tk(self.canvas, chart_frame, pack_toolbar=False)
         self.toolbar.update()
         self.toolbar.pack(side="bottom", fill="x")
 
+        # Chart buttons
         btns = ttk.Frame(chart_frame)
         btns.pack(side="bottom", fill="x")
         ttk.Button(btns, text="Clear Chart", command=self._clear_chart).pack(side="right", padx=4)
@@ -731,10 +775,9 @@ class App:
         self.speeds_cmd = torch.ones(self.problem.N, dtype=torch.float64) * 25.0
         self.flows_meas_filt = torch.zeros(self.problem.N, dtype=torch.float64)
 
-        # Rebuild controllers for the new problem (fixes the 5->4 size mismatch)
+        # Rebuild controllers for the new problem
         current_driver = self.driver_var.get()
         self._build_controllers_for_current_problem()
-        # If previous driver missing (unlikely), pick default
         if current_driver not in self.controllers:
             current_driver = self._default_driver_name()
         self.driver_var.set(current_driver)
@@ -796,7 +839,7 @@ class App:
         suggested = {}
         for name in self.controller_names:
             try:
-                s = self.controllers[name].suggest(self.flows_meas_filt, self.target_ratio, F_target, speeds_direct)
+                s = self.controllers[name].suggest(self.flows_meas_filt, self.target_ratio, F_total=F_target, speeds_direct=speeds_direct)
                 s = s.detach().clone()
             except Exception:
                 s = speeds_direct.clone()
@@ -808,7 +851,6 @@ class App:
         drv = self.driver_var.get()
         if self.running:
             speeds_des = suggested.get(drv, speeds_direct)
-            # Ensure shape again for safety
             speeds_des = ensure_shape(speeds_des, speeds_direct)
             self.speeds_cmd = slew_limit(self.speeds_cmd, speeds_des, self.problem.slew_rate,
                                          self.problem.speed_min, self.problem.speed_max)
@@ -877,15 +919,18 @@ class App:
         # Color header for best MAE
         for lbl in self.err_header_labels.values():
             lbl.config(foreground="black")
-        best_name = min(maes.keys(), key=lambda n: maes[n] if np.isfinite(maes[n]) else np.inf)
-        best_header = f"{best_name}"
-        if best_header in self.err_header_labels:
-            self.err_header_labels[best_header].config(foreground="red")
+        if len(maes):
+            best_name = min(maes.keys(), key=lambda n: maes[n] if np.isfinite(maes[n]) else np.inf)
+            best_header = f"{best_name}"
+            if best_header in self.err_header_labels:
+                self.err_header_labels[best_header].config(foreground="red")
+        else:
+            best_name = None
 
         # ── Update two-column MAE table (best row in red)
         for name, (_name_lbl, val_lbl) in self.summary_rows.items():
             val_lbl.config(
-                text=f"{maes[name]:.2f} / {maxes[name]:.2f}",
+                text=f"{maes.get(name, float('nan')):.2f} / {maxes.get(name, float('nan')):.2f}",
                 foreground=("red" if name == best_name else "black")
             )
 
