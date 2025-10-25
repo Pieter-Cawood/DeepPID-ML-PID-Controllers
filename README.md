@@ -6,17 +6,17 @@
 <div style="display: flex; align-items: flex-start;">
   <div style="flex: 1;">
 
-A **playground** for experimenting with **PID** and **machine-learning-based controllers**.  
+A **playground** for experimenting with **PID**, **model‑predictive**, and **machine‑learning–based controllers**.  
 DeepPID provides both **traditional** and **neural adaptive controllers** in a single, consistent framework, complete with a live **Tkinter + Matplotlib GUI** for interactive benchmarking.
 
-Through extensive simulation and real-time tests on **nonlinear**, **coupled**, and **time-varying plants**, it is demonstrated that the **ML-based adaptive models** (*GRU*, *MLP*, and *Transformer* variants) consistently **outperform conventional PID and Cascade-PID controllers** in both transient and steady-state performance.
+Through extensive simulation and real-time tests on **nonlinear**, **coupled**, and **time‑varying plants**, it is shown that the **ML‑based adaptive models** (*GRU*, *MLP*, *Transformer*) and the **Hybrid MPC** consistently **outperform conventional PID and Cascade‑PID controllers** in difficult regimes while preserving safety.
 
 The adaptive models achieve:
 - ⚡ **Faster convergence** with minimal overshoot  
-- 🎯 **Near-zero steady-state error** across diverse process conditions  
-- 🧩 **Robustness** to parameter drift and actuator limits without manual re-tuning  
+- 🎯 **Near‑zero steady‑state error** across diverse process conditions  
+- 🧩 **Robustness** to parameter drift and actuator limits without manual re‑tuning  
 
-These results confirm that **data-driven adaptation—when combined with physical constraints—generalizes PID control** beyond fixed-gain heuristics while maintaining interpretability and stability.
+These results confirm that **data‑driven adaptation—combined with physical constraints—generalizes PID control** beyond fixed‑gain heuristics while maintaining interpretability and stability.
 
   </div>
   <div style="margin-left: 20px; flex-shrink: 0;">
@@ -27,37 +27,56 @@ These results confirm that **data-driven adaptation—when combined with physica
 
 ---
 
-### GRUController — Adaptive Neural Controller (PID-inspired)
+## At‑a‑glance: PID vs Deep Learning vs MPC
 
-A gated recurrent unit (GRU) network that directly predicts actuator speeds based on recent state history.  
-It embeds **PID-like control objectives**—composition matching, total flow regulation, smoothness, and bounded actuation—into its online loss function.  
-While not using explicit PID equations, it behaves as a **hybrid adaptive controller**, combining physical constraints with data-driven prediction.  
-This approach consistently **outperforms fixed-gain PID** under nonlinear, coupled, or drifting plant conditions, achieving **near-zero steady-state error** and **smoother transients**.
+| Approach | Best For | Strengths | Trade-offs | What it Needs |
+|---|---|---|---|---|
+| **PID / Cascade PID** | Well-behaved, weakly coupled plants with modest drift | Simple, interpretable, tiny footprint, fast response | Retuning under drift/nonlinearity, cross-coupling fights, limited look‑ahead | A rough time constant + sensible bounds; optional feed‑forward |
+| **Deep Learning (MLP / GRU / Transformer)** | Nonlinear, coupled, time‑varying plants; unknown physics; multi‑objective shaping | Learns mappings PID can’t; adapts online; smooth under constraints; minimal modeling | Needs careful safety layer; online training budget; behavior depends on loss design | Physical bounds/slew; losses for composition/total/smoothness; optional PID reference |
+| **Model Predictive Control (Hybrid MPC)** | Constraint‑heavy problems needing short look‑ahead; competing objectives | Plans over horizon; handles constraints explicitly; blends physics + learned residuals | Heavier compute; relies on model quality; horizon/weights tuning | Discrete plant update (α / k), bounds, small horizon, good normalization |
+
+**When to pick what**  
+- Start with **PID / Cascade PID** for near‑first‑order dynamics, mild couplings, or when you need a **tiny, explainable** controller.  
+- Choose **MLP / GRU / Transformer** for **persistent nonlinearity/coupling** or frequent operating‑point changes—especially if constant re‑tuning is painful.  
+- Use **Hybrid MPC** when you need **explicit constraint handling** and **short‑horizon look‑ahead** (e.g., avoiding actuator banging while meeting a tight total/spec).
+
+> **Stability slider**: System inconsistencies and model mismatch can be **simulated** in the GUI via the **Stability** slider. Setting it **below 100%** injects drift/noise to benchmark robustness under uncertain conditions.
 
 ---
 
-### MLPController — Physics-Aware Neural Controller
+## Featured controllers
 
-A feed-forward multilayer perceptron that maps system state directly to actuator commands.  
-It incorporates a **physics-aware loss**, penalizing composition and total flow errors, actuator smoothness, and saturation proximity.  
-This model is **lightweight yet powerful**, excelling in steady-state precision and smooth transitions, ideal for slower or more stable plants.
+### GRUController — Adaptive Neural Controller (PID‑inspired)
+A gated recurrent unit (GRU) network that directly predicts actuator speeds from recent history. It embeds **PID‑like control objectives**—composition matching, total flow regulation, smoothness, and bounded actuation—into its online loss. It behaves as a **hybrid adaptive controller**, combining physical constraints with data‑driven prediction. Achieves **near‑zero steady‑state error** and **smoother transients** under nonlinear, coupled, or drifting plants.
+
+### MLPController — Physics‑Aware Neural Controller
+A feed‑forward multilayer perceptron mapping the state to actuator commands. Uses a **physics‑aware loss** (composition, total, smoothness, and saturation barriers). **Lightweight yet strong** for steady‑state precision and smooth transitions—great baseline for slower or more stable plants.
+
+### HybridMPCController — Predictive Optimizer with Learned Residuals
+A **short‑horizon optimizer** that rolls out a simple plant model while a **learned residual network** patches model mismatch. It enforces bounds/slew on the applied action and balances composition/total/smoothness with horizon costs. High **robustness + interpretability**, outperforming fixed‑gain and static MPC baselines in constraint‑heavy tasks.
 
 ---
 
-### HybridMPCController — Gradient-Based Predictive Optimizer with Learned Residuals
+## Other controllers in the zoo
 
-A **short-horizon optimizer** that blends classical MPC with a **learned residual dynamics model**.  
-It predicts future trajectories using a simplified plant model and refines them using a small neural correction network.  
-The result is a **model-predictive controller that adapts online**—providing high robustness and interpretability while outperforming both PID and static MPC approaches.
+- **PIDController** — IMC‑style single‑loop PID with derivative on measurement, setpoint‑weighting, conditional integrator, anti‑windup, and **online τ (alpha) refinement**.  
+- **CascadePIDController** — Inner IMC‑tuned PID per channel plus **outer PI loops** for total and composition (zero‑sum trim).  
+- **TransformerCtrl** — Causal Transformer that consumes a recent feature window; trains online with the same physics‑aware objective.  
+- **PINNCtrl** — MLP variant that adds **physics barriers** (positivity, soft limit barrier) to increase consistency.  
+- **RLSafetyCtrl** — Actor network wrapped by the same **slew + clamp safety layer**; uses a supervised objective in the demo (swap for PPO/SAC in a full RL setup).  
+- **PIDResidualNN** — Classic PID with a small NN that proposes **delta speeds**; residual is rate‑limited and tightly clamped.  
+- **AdaptiveHierCtrl** — Cascade PID with a **tiny NN tuner** that adjusts inner‑loop gains in **log‑space** relative to baselines (safe, slow drift).
+
+> All controllers output **speeds** and are passed through the **same** slew limiter + clamps for apples‑to‑apples comparisons. Neural models train **online** with physics‑aware losses; MPC plans a short sequence but applies only the **first safe action** each tick.
 
 ---
 
 The GUI (`examples/test.py`) lets you:
-- Choose different **plant problems** (tank, flow, quadcopter-like, etc.)
-- Set the stability / random noise in the system.
-- Switch between **controllers** (PID, CascadePID, MLP, GRU, Transformer, etc.)
-- Observe **real-time set-point tracking**, **mean absolute error (MAE)** curves, and **controller outputs**
-- See which approach adapts fastest to nonlinear or coupled dynamics
+- Choose different **plant problems** (tank, flow, quadcopter‑like, etc.).  
+- **Set Stability / noise** to simulate system inconsistency and model mismatch.  
+- Switch between **controllers** (PID, CascadePID, MLP, GRU, Transformer, MPC, etc.).  
+- Observe **real‑time set‑point tracking**, **MAE curves**, and **controller outputs**.  
+- See which approach adapts fastest to nonlinear or coupled dynamics.
 
 <p align="center">
   <img src="docs/gui.gif" alt="DeepPID GUI"><br>
@@ -69,10 +88,41 @@ The GUI (`examples/test.py`) lets you:
 ## What’s inside
 
 - **PID**: IMC‑style auto‑tuned PID with anti‑windup, bumpless transfer, and online refinement.  
-- **CascadePID**: stabilized inner PID with outer composition/total loops.  
-- **Neural controllers**: MLP, GRU, Transformer, PINN‑flavored, hybrid MPC stub, and safety‑wrapped RL stub.  
-- **GUI**: real‑time MAE table + history plot for apples‑to‑apples comparisons.  
-- **Packaging**: imports work (`import deeppid`) and examples run out of the box.
+- **CascadePID**: Stabilized inner PID with outer composition/total loops.  
+- **Neural controllers**: MLP, GRU, Transformer, PINN‑flavored, safety‑wrapped RL.  
+- **Hybrid MPC**: Short‑horizon optimizer with a learned residual dynamics model.  
+- **GUI**: Real‑time MAE table + history plot for apples‑to‑apples comparisons.  
+- **Packaging**: Imports work (`import deeppid`) and examples run out of the box.
+
+---
+
+## Controller zoo (names match `controllers.py`)
+
+- `PIDController` — IMC auto‑tuned + online refinement  
+- `CascadePIDController` — inner PID + outer total/composition PI  
+- `MLPController` — physics‑aware feed‑forward NN  
+- `GRUController` — sequence model with safety + objectives  
+- `HybridMPCController` — short‑horizon optimizer + residual model  
+- `PIDResidualNN` — PID + small residual NN  
+- `TransformerCtrl` — causal Transformer policy  
+- `RLSafetyCtrl` — actor NN + safety (demo)  
+- `PINNCtrl` — MLP with stronger physics penalties  
+- `AdaptiveHierCtrl` — CascadePID with tiny NN tuner (log‑scaled gains)
+
+---
+
+## Problem zoo (names match `problems.py`)
+
+- `SingleTankMixerProblem` — Baseline first‑order lag + noise (N=5).  
+- `DeadtimeVaryingGainsProblem` — Dead‑time, actuator smoothing, drift (N=5).  
+- `NonlinearBackpressureProblem` — Backpressure coupling + soft saturation (N=5).  
+- `TwoTankCascadeProblem` — Two‑stage transport/mixing (N=5).  
+- `FaultySensorsActuatorsProblem` — Stiction, outages, spikes (N=5).  
+- `QuadcopterAltYawProblem` — Altitude (total) + yaw (composition), N=4 rotors.
+
+> Add your own problems in `deeppid/envs/problems.py` and register them in `AVAILABLE_PROBLEMS`.
+
+---
 
 ## Install (editable)
 
@@ -99,7 +149,7 @@ This launches the controller shoot‑out app. Choose any plant from the dropdown
 ```text
 deeppid/
   controllers/
-    controllers.py        # PID, CascadePID, MLP, GRU, Transformer, etc.
+    controllers.py        # PID, CascadePID, MLP, GRU, Transformer, MPC, etc.
   utils/
     utils.py              # Utility functions 
   envs/
@@ -111,27 +161,17 @@ tests/                    # (optional) put your pytest tests here
 
 ## How the GRU controller works (and why it’s different from PID)
 
-**Conventional PID** computes the next actuation using fixed (or slowly tuned) gains `Kp, Ki, Kd`
-around an interpretable structure with anti‑windup and filters. It’s great when the plant can be
-reasonably approximated by first/second‑order dynamics and the operating point doesn’t move too much.
+**Conventional PID** uses fixed/slowly tuned gains `Kp, Ki, Kd` around an interpretable structure with anti‑windup and filters—great when the plant is near first/second order and the operating point doesn’t move much.
 
 **GRU controller (adaptive & live)** takes a different tack:
 
 - **State** each tick: `[target ratio, total set‑point, recent measured flows, previous speeds]`
-- **Sequence model**: a GRU processes the recent context to estimate the next speeds in one shot
+- **Sequence model**: a GRU processes the recent context to estimate next speeds in one shot
 - **Hard safety layer**: speeds are **slew‑limited** and **clamped** to `[min, max]`
-- **Online objective** (optimized every few steps):
-  - match **composition** (fractions) to target
-  - match **total** output to the requested value
-  - keep **smooth** changes (actuator wellness)
-  - stay inside bounds with a **soft barrier**
-  - optionally track a reference/baseline (e.g., PID suggestion)
-- **Why it helps**: when the plant is nonlinear, coupled, or operating conditions drift, the GRU
-  can “learn” mappings PID would need re‑tuning for. You still keep the same safety rails as PID.
+- **Online objective** (optimized every few steps): composition, total, smoothness, bound barrier, optional reference
+- **Why it helps**: with nonlinear, coupled, or drifting plants, the GRU learns mappings PID would need re‑tuning for—keeping the **same safety rails**.
 
-You can inspect all loss terms and constraints in `controllers.py` (classes `GRUController`, `MLPController`).
-Everything is implemented to be **stable‑by‑construction**: we never bypass slew/clamp and we bias to
-baseline allocations when signals are missing or become non‑finite.
+You can inspect all loss terms and constraints in `controllers.py` (`GRUController`, `MLPController`). Everything is implemented to be **stable‑by‑construction**: we never bypass slew/clamp and we bias to baseline allocations when signals are missing or non‑finite.
 
 ---
 
@@ -173,18 +213,18 @@ class MyCustomProblem:
         self._y = torch.zeros(self.N, dtype=torch.float64)
 
     def baseline_allocation(self, ratio: torch.Tensor, F_total: torch.Tensor) -> torch.Tensor:
-        \"\"\"Feedforward speeds (simple inverse of k within bounds).\"\"\"
+        """Feedforward speeds (simple inverse of k within bounds)."""
         s = (ratio * F_total) / (self.k_coeff + 1e-12)
         return torch.clamp(s, self.speed_min, self.speed_max)
 
     def step(self, speeds_cmd: torch.Tensor) -> torch.Tensor:
-        \"\"\"One simulation step. Update and return filtered measured outputs.\"\"\"
+        """One simulation step. Update and return filtered measured outputs."""
         y_raw = self.k_coeff * speeds_cmd
         self._y = self._y + self.alpha * (y_raw - self._y)
         return self._y.clone()
 
     def comp_from_speeds(self, speeds: torch.Tensor) -> torch.Tensor:
-        \"\"\"Return composition (fractions) implied by nominal model for display/metrics.\"\"\"
+        """Return composition (fractions) implied by nominal model for display/metrics."""
         flow = self.k_coeff * speeds
         tot = flow.sum() + 1e-12
         return flow / tot
@@ -207,7 +247,7 @@ Your new problem will now appear in the GUI's *Problem* dropdown.
 
 Controllers live in `deeppid/controllers/controllers.py`. The GUI expects them to be discoverable via the
 package registry `deeppid.AVAILABLE` (set up in `deeppid/__init__.py`). The easiest path is to implement
-a class with a **PID-like interface** and wrap it with `CtrlAdapter` automatically:
+a class with a **PID‑like interface** and wrap it with `CtrlAdapter` automatically:
 
 **Minimum contract (any of these works):**
 - Provide `step(flows_meas_filt, target_ratio, F_total, speeds_direct)` → returns speeds (Tensor of length N); or
@@ -269,10 +309,7 @@ from .controllers.controllers import MyFancyController
 AVAILABLE["MyFancy"] = MyFancyController
 ```
 
-It will then show up in the GUI *Driver* combo-box automatically.
-
-> 🧩 Tip: If your controller already conforms to the `step(...)` signature, the GUI will call it directly.
-> Otherwise it will fall back to `forward(...)`. `CtrlAdapter` normalizes those differences for you.
+It will then show up in the GUI *Driver* combo‑box automatically.
 
 ---
 
