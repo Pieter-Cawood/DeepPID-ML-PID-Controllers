@@ -4,7 +4,7 @@
 [![Python Versions](https://img.shields.io/pypi/pyversions/deeppid.svg)](https://pypi.org/project/deeppid/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 <!-- Replace OWNER/REPO below after pushing this repo to GitHub -->
-[![CI](https://github.com/Pieter-Cawood/DeepPID/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
+[![CI](https://github.com/Pieter-Cawood/DeepPID/actions/workflows/ci.yml/badge.svg)](https://github.com/Pieter-Cawood/DeepPID/actions/workflows/ci.yml)
 
 A clean, documented playground for **classic PID control** and **ML‑assisted controllers** you can
 run live. It includes an interactive Tkinter+Matplotlib GUI (`examples/test.py`) that compares
