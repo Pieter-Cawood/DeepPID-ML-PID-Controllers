@@ -1,7 +1,5 @@
 # DeepPID — Classic PID ✕ ML Controllers
 
-[![PyPI - Version](https://img.shields.io/pypi/v/deeppid.svg)](https://pypi.org/project/deeppid/)
-[![Python Versions](https://img.shields.io/pypi/pyversions/deeppid.svg)](https://pypi.org/project/deeppid/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 <!-- Replace OWNER/REPO below after pushing this repo to GitHub -->
 [![CI](https://github.com/Pieter-Cawood/DeepPID/actions/workflows/ci.yml/badge.svg)](https://github.com/Pieter-Cawood/DeepPID/actions/workflows/ci.yml)

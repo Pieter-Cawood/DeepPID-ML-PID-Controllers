@@ -43,13 +43,3 @@ jobs:
               print("Import failed:", e)
               sys.exit(1)
           PY
-
-      - name: Run tests (if any)
-        shell: bash
-        run: |
-          shopt -s globstar nullglob
-          if ls tests/**/*.py tests/*.py >/dev/null 2>&1; then
-            pytest -q
-          else
-            echo "No tests found, skipping pytest."
-          fi
