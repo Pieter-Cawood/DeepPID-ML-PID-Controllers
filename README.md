@@ -2,6 +2,9 @@
 
 [![CI](https://github.com/Pieter-Cawood/DeepPID/actions/workflows/ci.yml/badge.svg)](https://github.com/Pieter-Cawood/DeepPID/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-%F0%9F%A7%AA-red)](https://pytorch.org/)
+[![GUI](https://img.shields.io/badge/Tkinter%20+%20Matplotlib-GUI-green)](#)
 
 <div style="display: flex; align-items: flex-start;">
   <div style="flex: 1;">
