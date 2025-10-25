@@ -794,56 +794,107 @@ class HybridMPCController(torch.nn.Module):
         return self.speed_min + span * torch.sigmoid(raw)
 
     def step(self, y, tr, Ft, s_ff=None, **_):
-        """
-        Plan a short sequence S[0:H] with gradient descent on the rollout objective,
-        then apply the first action S[0] with slew/clamp safety.
-        """
-        # Warm start from residual NN around previous speeds
+        device, dtype = y.device, y.dtype
+        H, N = self.H, self.N
+
+        # ---- Warm-start: plan shift or residual bias around prev_speeds ----
         with torch.no_grad():
-            inp = torch.cat([y, self.prev_speeds], dim=0)
-            bias = self._map_logits_to_speed(self.residual(inp))
-            s0 = clip(self.prev_speeds + 0.2 * (bias - self.prev_speeds), self.speed_min, self.speed_max)
+            if hasattr(self, "_S_prev") and self._S_prev is not None and self._S_prev.shape == (H, N):
+                s0 = self._S_prev.clone()
+                S0 = torch.vstack([s0[1:], s0[-1:]])
+            else:
+                inp  = torch.cat([y, self.prev_speeds], dim=0)
+                bias = self._map_logits_to_speed(self.residual(inp))
+                base = clip(self.prev_speeds + 0.2 * (bias - self.prev_speeds), self.speed_min, self.speed_max)
+                S0   = base.repeat(H, 1)
 
-        S = s0.repeat(self.H, 1)   # (H, N)
-        S.requires_grad_(True)
-        opt = torch.optim.SGD([S], lr=self.lr, momentum=0.0)
+            if s_ff is not None:
+                # Gentle pull towards feedforward along horizon
+                S0 = 0.8 * S0 + 0.2 * s_ff.view(1, -1).expand_as(S0)
 
-        for _ in range(self.opt_iters):
+        S = S0.detach().clone().requires_grad_(True)
+        # Choose optimizer
+        use_lbfgs = True
+        if use_lbfgs:
+            opt = torch.optim.LBFGS([S], lr=self.lr, max_iter=self.opt_iters, line_search_fn="strong_wolfe")
+        else:
+            opt = torch.optim.Adam([S], lr=self.lr)
+
+        # Precompute constants
+        span = (self.speed_max - self.speed_min).clamp_min(1e-6)
+        trH  = tr.view(1, 1, N)  # broadcast helpers
+        FtH  = Ft.view(1, 1, 1)
+
+        # Trust-region & slew weights
+        W_comp, W_tot = 3.0, 6.0
+        W_slew_plan   = 0.05
+        W_barrier     = 0.08
+        W_trust       = 0.01
+
+        S_ref = S0.detach().clone()
+
+        def closure():
             opt.zero_grad()
-            y_sim = y.detach().clone()
-            J = torch.tensor(0.0, dtype=y.dtype, device=y.device)
 
-            for t in range(self.H):
-                s_t = S[t]
+            # rollout
+            y_sim = y.detach().clone()
+            J = S.new_zeros(())
+            S_resh = S  # (H,N)
+
+            prev_u = None
+            for t in range(H):
+                s_t = S_resh[t]
                 # residual correction
                 inp = torch.cat([y_sim, s_t], dim=0)
-                s_t_corr = clip(s_t + 0.1 * (self._map_logits_to_speed(self.residual(inp)) - s_t),
-                                self.speed_min, self.speed_max)
+                s_corr = clip(s_t + 0.1 * (self._map_logits_to_speed(self.residual(inp)) - s_t),
+                            self.speed_min, self.speed_max)
+                # dynamics
+                y_sim = self._phys(y_sim, s_corr)
 
-                y_sim = self._phys(y_sim, s_t_corr)
-                tot = y_sim.sum() + 1e-12
+                tot  = y_sim.sum() + 1e-12
                 comp = y_sim / tot
 
-                J = J + 3.0 * ((comp - tr) ** 2).sum() + 6.0 * (tot - Ft).pow(2)
-                if t > 0:
-                    J = J + 0.05 * ((S[t] - S[t - 1]) ** 2).sum()
+                J = J + W_comp * ((comp - tr) ** 2).sum() + W_tot * (tot - Ft).pow(2)
 
-            # soft bound barriers over the entire plan
-            span = (self.speed_max - self.speed_min).clamp_min(1e-6)
+                if prev_u is not None:
+                    J = J + W_slew_plan * ((s_t - prev_u) ** 2).sum()
+                prev_u = s_t
+
+            # terminal cost (heavier weight on terminal state)
+            totT  = y_sim.sum() + 1e-12
+            compT = y_sim / totT
+            J = J + 2.0 * (W_comp * ((compT - tr) ** 2).sum() + W_tot * (totT - Ft).pow(2))
+
+            # bound barriers over entire plan
             tau = (S - self.speed_min) / span
-            J = J + 0.08 * (-(torch.log(tau.clamp_min(0.02)) + torch.log((1 - tau).clamp_min(0.02)))).sum()
+            J = J + W_barrier * (-(torch.log(tau.clamp_min(0.02)) + torch.log((1 - tau).clamp_min(0.02)))).sum()
+
+            # trust region
+            J = J + W_trust * ((S - S_ref) ** 2).sum()
 
             J.backward()
-            opt.step()
+            torch.nn.utils.clip_grad_norm_([S], max_norm=5.0)
+            return J
+
+        if use_lbfgs:
+            opt.step(closure)
             with torch.no_grad():
-                S[:] = torch.clamp(S, self.speed_min, self.speed_max)
+                S.data[:] = torch.clamp(S, self.speed_min, self.speed_max)
+        else:
+            for _ in range(self.opt_iters):
+                loss = closure()
+                opt.step()
+                with torch.no_grad():
+                    S.data[:] = torch.clamp(S, self.speed_min, self.speed_max)
 
         with torch.no_grad():
             s = S[0]
             s = slew_limit(self.prev_speeds, s, self.slew, self.speed_min, self.speed_max)
             s = clip(s, self.speed_min, self.speed_max)
             self.prev_speeds = s.clone()
+            self._S_prev = S.detach().clone()  # cache for shift next tick
             return s
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PID + small residual NN (safe hybrid)

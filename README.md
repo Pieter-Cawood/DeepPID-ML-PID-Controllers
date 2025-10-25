@@ -36,8 +36,25 @@ This approach consistently **outperforms fixed-gain PID** under nonlinear, coupl
 
 ---
 
+### MLPController — Physics-Aware Neural Controller
+
+A feed-forward multilayer perceptron that maps system state directly to actuator commands.  
+It incorporates a **physics-aware loss**, penalizing composition and total flow errors, actuator smoothness, and saturation proximity.  
+This model is **lightweight yet powerful**, excelling in steady-state precision and smooth transitions, ideal for slower or more stable plants.
+
+---
+
+### HybridMPCController — Gradient-Based Predictive Optimizer with Learned Residuals
+
+A **short-horizon optimizer** that blends classical MPC with a **learned residual dynamics model**.  
+It predicts future trajectories using a simplified plant model and refines them using a small neural correction network.  
+The result is a **model-predictive controller that adapts online**—providing high robustness and interpretability while outperforming both PID and static MPC approaches.
+
+---
+
 The GUI (`examples/test.py`) lets you:
 - Choose different **plant problems** (tank, flow, quadcopter-like, etc.)
+- Set the stability / random noise in the system.
 - Switch between **controllers** (PID, CascadePID, MLP, GRU, Transformer, etc.)
 - Observe **real-time set-point tracking**, **mean absolute error (MAE)** curves, and **controller outputs**
 - See which approach adapts fastest to nonlinear or coupled dynamics
