@@ -1,4 +1,4 @@
-# DeepPID — A Deep-learning PID playground to test Adaptive system controllers
+# DeepPID — A deep-learning PID playground featuring Adaptive ML-based system controllers
 
 [![CI](https://github.com/Pieter-Cawood/DeepPID/actions/workflows/ci.yml/badge.svg)](https://github.com/Pieter-Cawood/DeepPID/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
