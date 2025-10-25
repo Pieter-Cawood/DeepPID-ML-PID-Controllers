@@ -24,7 +24,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 # Import problems (plants)
-from .problems import *
+from deeppid.envs.problems import *
 
 torch.set_default_dtype(torch.float64)
 
