@@ -1,4 +1,4 @@
-# DeepPID — A Deep Learning–Based Adaptive PID Controller
+# DeepPID — A PID Playground and Deep Learning–Based Adaptive PID Controller
 
 [![CI](https://github.com/Pieter-Cawood/DeepPID/actions/workflows/ci.yml/badge.svg)](https://github.com/Pieter-Cawood/DeepPID/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
@@ -6,7 +6,7 @@
 <div style="display: flex; align-items: flex-start;">
   <div style="flex: 1;">
 
-A **professional, documented playground** for experimenting with **PID** and **machine-learning-based controllers**.  
+A **playground** for experimenting with **PID** and **machine-learning-based controllers**.  
 DeepPID provides both **traditional** and **neural adaptive controllers** in a single, consistent framework, complete with a live **Tkinter + Matplotlib GUI** for interactive benchmarking.
 
 Through extensive simulation and real-time tests on **nonlinear**, **coupled**, and **time-varying plants**, it is demonstrated that the **ML-based adaptive models** (*GRU*, *MLP*, and *Transformer* variants) consistently **outperform conventional PID and Cascade-PID controllers** in both transient and steady-state performance.
