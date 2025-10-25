@@ -43,7 +43,7 @@ The GUI (`examples/test.py`) lets you:
 - See which approach adapts fastest to nonlinear or coupled dynamics
 
 <p align="center">
-  <img src="docs/gui.png" alt="DeepPID GUI"><br>
+  <img src="docs/gui.gif" alt="DeepPID GUI"><br>
   <em>Interactive GUI — live comparison of controller performance.</em>
 </p>
 
