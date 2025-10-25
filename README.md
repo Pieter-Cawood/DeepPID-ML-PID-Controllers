@@ -7,7 +7,7 @@
 [![GUI](https://img.shields.io/badge/Tkinter%20+%20Matplotlib-GUI-green)](#)
 
 <div style="display: flex; align-items: flex-start;">
-  <div style="flex: 1;">
+  <div style="flex: 1;"> 
 
 A **playground** for experimenting with **PID**, **model‑predictive**, and **machine‑learning–based controllers**.  
 DeepPID provides both **traditional** and **neural adaptive controllers** in a single, consistent framework, complete with a live **Tkinter + Matplotlib GUI** for interactive benchmarking.
