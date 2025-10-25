@@ -1,12 +1,18 @@
-# DeepPID — Classic PID ✕ ML Controllers
+# DeepPID — A deep learning–based adaptive PID controller
 
+[![CI](https://github.com/Pieter-Cawood/DeepPID/actions/workflows/ci.yml/badge.svg)](https://github.com/Pieter-Cawood/DeepPID/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 <!-- Replace OWNER/REPO below after pushing this repo to GitHub -->
-[![CI](https://github.com/Pieter-Cawood/DeepPID/actions/workflows/ci.yml/badge.svg)](https://github.com/Pieter-Cawood/DeepPID/actions/workflows/ci.yml)
+
 
 A clean, documented playground for **classic PID control** and **ML‑assisted controllers** you can
 run live. It includes an interactive Tkinter+Matplotlib GUI (`examples/test.py`) that compares
 multiple controllers on interchangeable “problems” (plants).
+
+![DeepPID](docs/deeppid.png)
+
+![DeepPID](docs/gui.png)
+
 
 ## What’s inside
 
