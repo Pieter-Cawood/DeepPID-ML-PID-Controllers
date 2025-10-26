@@ -4,11 +4,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-%F0%9F%A7%AA-red)](https://pytorch.org/)
-[![GUI](https://img.shields.io/badge/Tkinter%20+%20Matplotlib-GUI-green)](#)
+[![GUI](https://img.shields.io/badge/Tkinter%20+%20Matplotlib-GUI-green)](#) 
 
 <div style="display: flex; align-items: flex-start;">
-  <div style="flex: 1;">   
+  <div style="flex: 1;">         
+  <div style="flex: 1;">         
 
+  
 A **playground** for experimenting with **PID**, **model‑predictive**, and **machine‑learning–based controllers**.  
 DeepPID provides both **traditional** and **neural adaptive controllers** in a single, consistent framework, complete with a live **Tkinter + Matplotlib GUI** for interactive benchmarking.
 
@@ -25,7 +27,7 @@ These results confirm that **data‑driven adaptation—combined with physical c
 
   </div>
   <div style="margin-left: 20px; flex-shrink: 0;">
-    <img src="docs/deeppid.png" alt="DeepPID Architecture" width="340"><br>
+    <img src="docs/deeppid.png" alt="DeepPID Architecture" width="342"><br>
     <em>DeepPID — Hybrid classical & ML-based control framework.</em>
   </div>
 </div>
@@ -76,7 +78,7 @@ A **short‑horizon optimizer** that rolls out a simple plant model while a **le
 
 ---
 
-The GUI (`examples/test.py`) lets you:
+The GUI (`simulation/run.py`) lets you:
 - Choose different **plant problems** (tank, flow, quadcopter‑like, etc.).  
 - **Set Stability / noise** to simulate system inconsistency and model mismatch.  
 - Switch between **controllers** (PID, CascadePID, MLP, GRU, Transformer, MPC, etc.).  
@@ -84,8 +86,13 @@ The GUI (`examples/test.py`) lets you:
 - See which approach adapts fastest to nonlinear or coupled dynamics.
 
 <p align="center">
-  <img src="docs/gui.gif" alt="DeepPID GUI"><br>
+  <img src="docs/gui.png" alt="DeepPID GUI"><br>
   <em>Interactive GUI — live comparison of controller performance.</em>
+</p>
+
+<p align="center">
+  <img src="docs/gui2.png" alt="DeepPID GUI"><br>
+  <em>Problem Simulation— visual simulation of the problem.</em>
 </p>
 
 ---
@@ -143,7 +150,7 @@ pip install -e .
 ## Quick start (GUI)
 
 ```bash
-python examples/test.py
+python simulation/run.py
 ```
 
 This launches the controller shoot‑out app. Choose any plant from the dropdown, pick a driver
@@ -159,8 +166,8 @@ deeppid/
     utils.py              # Utility functions 
   envs/
     problems.py           # “Problems”/plants with labels, units, limits
-examples/
-  test.py                 # Tk + Matplotlib live comparison app
+simulation/
+  run.py                  # Tk + Matplotlib live comparison app
 tests/                    # (optional) put your pytest tests here
 ```
 
@@ -321,7 +328,7 @@ It will then show up in the GUI *Driver* combo‑box automatically.
 ## Testing
 
 - Quick import smoke test: `python -c "import deeppid; print('OK')"`  
-- Run GUI: `python examples/test.py`  
+- Run GUI: `python simulation/run.py`  
 - Add lightweight unit tests in `tests/` (e.g., `pytest -q`).
 
 ## License

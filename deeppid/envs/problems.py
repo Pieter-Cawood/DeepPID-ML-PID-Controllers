@@ -325,6 +325,7 @@ class QuadcopterAltYawProblem:
         # IO sizes & presentation
         self.N = 4
         self.labels = ["FL(+)", "FR(-)", "RR(+)", "RL(-)"]
+        self.output_name, self.output_unit, self.entity_title = "Thrust", "N", "Rotor"
 
         # Speed→thrust map: thrust_i [N] ≈ k_i * speed_i[%]
         # Chosen so hover ~25% per rotor at m=1kg (9.81N total).
