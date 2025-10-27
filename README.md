@@ -23,14 +23,24 @@ The adaptive models achieve:
 - 🎯 **Near‑zero steady‑state error** across diverse process conditions  
 - 🧩 **Robustness** to parameter drift and actuator limits without manual re‑tuning  
 
-These results confirm that **data‑driven adaptation—combined with physical constraints—generalizes PID control** beyond fixed‑gain heuristics while maintaining interpretability and stability.
+---
 
-  </div>
-  <div style="margin-left: 20px; flex-shrink: 0;">
-    <img src="docs/deeppid.png" alt="DeepPID Architecture" width="342"><br>
-    <em>DeepPID — Hybrid classical & ML-based control framework.</em>
-  </div>
-</div>
+The GUI (`simulation/run.py`) lets you:
+- Choose different **plant problems** (tank, flow, quadcopter‑like, etc.).  
+- **Set Stability / noise** to simulate system inconsistency and model mismatch.  
+- Switch between **controllers** (PID, CascadePID, MLP, GRU, Transformer, MPC, etc.).  
+- Observe **real‑time set‑point tracking**, **MAE curves**, and **controller outputs**.  
+- See which approach adapts fastest to nonlinear or coupled dynamics.
+
+<p align="center">
+  <img src="docs/gui.png" alt="DeepPID GUI"><br>
+  <em>Interactive GUI — live comparison of controller performance.</em>
+</p>
+
+<p align="center">
+  <img src="docs/gui2.png" alt="DeepPID GUI"><br>
+  <em>Problem Simulation— visual simulation of the problem.</em>
+</p>
 
 ---
 
@@ -75,25 +85,6 @@ A **short‑horizon optimizer** that rolls out a simple plant model while a **le
 - **AdaptiveHierCtrl** — Cascade PID with a **tiny NN tuner** that adjusts inner‑loop gains in **log‑space** relative to baselines (safe, slow drift).
 
 > All controllers output **speeds** and are passed through the **same** slew limiter + clamps for apples‑to‑apples comparisons. Neural models train **online** with physics‑aware losses; MPC plans a short sequence but applies only the **first safe action** each tick.
-
----
-
-The GUI (`simulation/run.py`) lets you:
-- Choose different **plant problems** (tank, flow, quadcopter‑like, etc.).  
-- **Set Stability / noise** to simulate system inconsistency and model mismatch.  
-- Switch between **controllers** (PID, CascadePID, MLP, GRU, Transformer, MPC, etc.).  
-- Observe **real‑time set‑point tracking**, **MAE curves**, and **controller outputs**.  
-- See which approach adapts fastest to nonlinear or coupled dynamics.
-
-<p align="center">
-  <img src="docs/gui.png" alt="DeepPID GUI"><br>
-  <em>Interactive GUI — live comparison of controller performance.</em>
-</p>
-
-<p align="center">
-  <img src="docs/gui2.png" alt="DeepPID GUI"><br>
-  <em>Problem Simulation— visual simulation of the problem.</em>
-</p>
 
 ---
 
